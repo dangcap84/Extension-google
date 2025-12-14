@@ -38,7 +38,7 @@
       console.log('[MAIN WORLD] Track width:', Math.round(trackRect.width), 'px');
       
       // Kiểm tra track có đủ rộng không (phải > 200px)
-      if (trackRect.width < 200) {
+      if (trackRect.width < 172) {
         console.error('[MAIN WORLD] Track quá nhỏ:', trackRect.width, 'px - có thể selector sai');
         return false;
       }
