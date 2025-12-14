@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Veo 3 Flow Auto Prompt",
+  "version": "1.0.0",
+  "description": "Tự động hoá prompt trong Google Flow SceneBuilder",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://labs.google/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://labs.google/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": ["https://labs.google/*"]
+    }
+  ]
+}
