@@ -1,3 +1,87 @@
+/**
+ * Scroll asset list (timeline) đến cuối để đảm bảo slider kéo được đến frame cuối cùng
+ * UPDATED: Không dựa vào class động, tìm qua cấu trúc DOM
+ */
+async function scrollAssetListToEnd() {
+  debugLog('📽 scrollAssetListToEnd: Đang scroll asset list đến cuối...');
+  
+  try {
+    // Tìm thumbnail container (div chứa nhiều div con có background-image hoặc img)
+    const allDivs = Array.from(document.querySelectorAll('div'));
+    
+    const thumbnailContainers = allDivs.filter(div => {
+      // Đếm số div con có background-image hoặc img (thumbnails)
+      const childrenWithImages = Array.from(div.children).filter(child => {
+        const style = window.getComputedStyle(child);
+        const hasBackgroundImage = style.backgroundImage && style.backgroundImage !== 'none';
+        const hasImg = child.querySelector('img');
+        return hasBackgroundImage || hasImg;
+      });
+      
+      return childrenWithImages.length >= 3; // Ít nhất 3 thumbnails
+    });
+    
+    if (thumbnailContainers.length === 0) {
+      debugLog('⚠️ Không tìm thấy thumbnail container');
+      return;
+    }
+    
+    debugLog(`✓ Tìm thấy ${thumbnailContainers.length} thumbnail container(s)`);
+    
+    // Với mỗi container, tìm scrollable parent
+    let scrollSuccess = false;
+    
+    for (const container of thumbnailContainers) {
+      let current = container;
+      let depth = 0;
+      
+      while (current && depth < 10) {
+        const parent = current.parentElement;
+        if (!parent) break;
+        
+        // Check nếu parent có scroll ngang (horizontal scrollable)
+        const isHorizontalScrollable = parent.scrollWidth > parent.clientWidth + 5;
+        
+        if (isHorizontalScrollable) {
+          const maxScrollLeft = parent.scrollWidth - parent.clientWidth;
+          
+          debugLog(`✓ Tìm thấy scrollable parent tại depth ${depth}`);
+          debugLog(`📏 ScrollWidth: ${parent.scrollWidth}, ClientWidth: ${parent.clientWidth}, Max: ${maxScrollLeft}`);
+          
+          // Scroll đến cuối
+          parent.scrollLeft = maxScrollLeft;
+          debugLog(`✓ Đã scroll asset list đến cuối (scrollLeft = ${parent.scrollLeft})`);
+          
+          scrollSuccess = true;
+          
+          // Đợi UI cập nhật
+          await new Promise(r => setTimeout(r, 500));
+          
+          // Verify scroll đã đến cuối
+          if (parent.scrollLeft >= maxScrollLeft - 10) {
+            debugLog('✅ Scroll thành công!');
+          } else {
+            debugLog(`⚠️ Scroll chưa đến cuối: ${parent.scrollLeft} / ${maxScrollLeft}`);
+          }
+          
+          break;
+        }
+        
+        current = parent;
+        depth++;
+      }
+      
+      if (scrollSuccess) break;
+    }
+    
+    if (!scrollSuccess) {
+      debugLog('⚠️ Không tìm thấy scrollable parent');
+    }
+    
+  } catch (e) {
+    debugLog('⚠️ scrollAssetListToEnd lỗi: ' + e);
+  }
+}
 // content.js
 // Chrome Extension for Google Flow - Veo 3 Auto Prompt Automation
 
@@ -13,15 +97,35 @@ function debugLog(text) {
   chrome.runtime.sendMessage({ type: 'DEBUG_LOG', text });
 }
 
+// Helper: Đếm số lượng asset hiện tại
+function getAssetCount() {
+  return document.querySelectorAll('[data-index] button').length;
+}
+
+// Helper: Kiểm tra có progress % đang chạy không
+function isProgressRunning() {
+  return Array.from(document.querySelectorAll('*')).some(el => {
+    const text = el.textContent.trim();
+    return /^\d+%$/.test(text) && el.offsetParent !== null;
+  });
+}
+
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'START_FLOW') {
     if (isRunning) {
       debugLog('Đã chạy rồi, bỏ qua START_FLOW');
       return;
     }
+    // Kiểm tra nếu còn video đang render thì không cho chạy flow mới
+    if (isProgressRunning()) {
+      debugLog('⚠️ Đang có video render, không thể chạy flow mới!');
+      sendResponse && sendResponse({ ok: false, error: 'Video đang render' });
+      return;
+    }
     prompts = message.prompts;
     currentPromptIndex = 0;
-    isRunning = true;
+        isRunning = true;
     debugLog('Bắt đầu flow với ' + prompts.length + ' prompt');
     runFlow();
     sendResponse && sendResponse({ ok: true });
@@ -48,19 +152,19 @@ async function runFlow() {
     try {
       debugLog('🎬 Đang xử lý prompt #' + (currentPromptIndex + 1));
       
-      // Chờ video render xong (nếu không phải prompt đầu tiên)
-      if (currentPromptIndex > 0) {
-        await waitForVideoRendered();
-      }
+          // Chờ video render xong (nếu không phải prompt đầu tiên)
+          if (currentPromptIndex > 0) {
+            await waitForVideoRendered();
+          }
       
-      await saveFrameAsAsset();
-      await openImagePicker();
-      await selectLatestAsset();
-      await inputPrompt(prompts[currentPromptIndex]);
-      await clickGenerate();
-      
+          await saveFrameAsAsset();
+          await openImagePicker();
+          await selectLatestAsset();
+          await inputPrompt(prompts[currentPromptIndex]);
+          await clickGenerate();
+
       debugLog('✅ Đã xong prompt #' + (currentPromptIndex + 1));
-      currentPromptIndex++;
+            currentPromptIndex++;
       
     } catch (e) {
       debugLog('❌ Lỗi: ' + e);
@@ -68,9 +172,9 @@ async function runFlow() {
       break;
     }
   }
-  
-  debugLog('🏁 Kết thúc flow.');
-  isRunning = false;
+
+      debugLog('🏁 Kết thúc flow.');
+    isRunning = false;
 }
 
 // ============================================
@@ -117,7 +221,7 @@ async function waitForVideoRendered() {
   debugLog('⏳ Chờ video render xong...');
   
   try {
-    // Bước 1: Chờ progress biến mất
+        // Bước 1: Chờ progress biến mất
     debugLog('📊 Chờ progress bar biến mất...');
     let attempts = 0;
     const maxAttempts = 120; // 2 phút (120 * 1000ms)
@@ -148,10 +252,10 @@ async function waitForVideoRendered() {
     if (attempts >= maxAttempts) {
       throw 'Timeout chờ video render (2 phút)';
     }
-    
+
     // Bước 2: Chờ thêm 2s để chắc chắn
     await new Promise(r => setTimeout(r, 2000));
-    
+
     // Bước 3: Kiểm tra nút save frame đã xuất hiện
     debugLog('🔍 Kiểm tra nút save frame...');
     const saveBtn = Array.from(
@@ -181,6 +285,9 @@ async function saveFrameAsAsset() {
   debugLog('📍 saveFrameAsAsset: Bắt đầu...');
   
   try {
+    // Scroll asset list đến cuối trước khi thao tác slider
+    await scrollAssetListToEnd();
+
     // Inject script nếu chưa có
     if (!window.__sliderDragInjected) {
       debugLog('🔧 Đang inject script vào main world...');
@@ -200,27 +307,23 @@ async function saveFrameAsAsset() {
       // Chờ script được execute
       await new Promise(r => setTimeout(r, 200));
     }
-    
+
     // Gửi message yêu cầu kéo slider
     debugLog('🎯 Gửi yêu cầu kéo slider đến cuối...');
     const result = await new Promise((resolve, reject) => {
       let resolved = false;
-      
       function handler(e) {
         if (e.data && e.data.type === 'SEEK_TO_END_VIDEO_RESULT') {
-          if (resolved) return; // Tránh resolve nhiều lần
+          if (resolved) return;
           resolved = true;
           window.removeEventListener('message', handler);
           debugLog('📨 Nhận kết quả từ main world: ok=' + e.data.ok + ', error=' + e.data.error);
           resolve(e.data);
         }
       }
-      
       window.addEventListener('message', handler);
-      
       debugLog('📤 Gửi message SEEK_TO_END_VIDEO_REQUEST');
       window.postMessage({ type: 'SEEK_TO_END_VIDEO_REQUEST' }, '*');
-      
       setTimeout(() => {
         if (resolved) return;
         resolved = true;
@@ -229,61 +332,48 @@ async function saveFrameAsAsset() {
         reject('Timeout kéo slider (5s)');
       }, 5000);
     });
-    
     if (!result.ok) {
       throw 'Không kéo được slider đến cuối: ' + (result.error || 'unknown');
     }
-    
     debugLog('✓ Đã kéo slider đến cuối');
-    await new Promise(r => setTimeout(r, 400));
-    
+    await new Promise(r => setTimeout(r, 1000));
+
     // Tìm và click nút save frame (icon "add")
     debugLog('🔍 Tìm nút save frame...');
     const saveBtn = Array.from(
       document.querySelectorAll('button[aria-haspopup="menu"] i.google-symbols')
     ).find(i => i.textContent.trim() === 'add');
-    
     if (!saveBtn) {
       debugLog('❌ Không tìm thấy nút save frame');
       throw 'Không tìm thấy nút save frame';
     }
-    
     const btn = saveBtn.closest('button');
     debugLog('✓ Tìm thấy nút save frame');
-    
     // Hover để mở menu
     debugLog('🖱️ Hover để mở menu...');
     btn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
     btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    
     // Chờ menu xuất hiện
-    await new Promise(r => setTimeout(r, 500));
-    
+    await new Promise(r => setTimeout(r, 1000));
     // Tìm menu item "Save frame as asset"
     debugLog('🔍 Tìm menu item Save frame...');
     const menuItems = document.querySelectorAll('[role="menuitem"]');
     debugLog(`Tìm thấy ${menuItems.length} menu items`);
-    
     const saveMenuItem = Array.from(menuItems).find(item => {
       const text = item.textContent.toLowerCase();
       return text.includes('save') && text.includes('frame');
     });
-    
     if (!saveMenuItem) {
       debugLog('❌ Không tìm thấy menu item Save frame');
       debugLog('Menu items có: ' + Array.from(menuItems).map(m => m.textContent).join(', '));
       throw 'Không tìm thấy menu item Save frame';
     }
-    
     debugLog('✓ Tìm thấy menu item: ' + saveMenuItem.textContent);
-    
     // Click menu item
     saveMenuItem.click();
     debugLog('✓ Đã click Save frame as asset.');
-    
     // Chờ asset được lưu
     await new Promise(r => setTimeout(r, 1000));
-    
   } catch (e) {
     debugLog('❌ saveFrameAsAsset: Lỗi ' + e);
     throw e;
@@ -298,7 +388,7 @@ async function saveFrameAsAsset() {
 async function openImagePicker() {
   debugLog('🖼️ openImagePicker: Chờ asset picker hiện...');
   // Asset picker thường tự hiện sau khi save frame
-  await new Promise(r => setTimeout(r, 500));
+  await new Promise(r => setTimeout(r, 1000));
 }
 
 /**
@@ -311,23 +401,32 @@ async function selectLatestAsset() {
   try {
     // Chờ asset list hiện
     const assetList = await waitForElement('.virtuoso-grid-list', 8000);
-    
-    // Chờ loading icon biến mất
+
+    // Chờ icon upload xuất hiện (i.google-symbols có textContent 'upload')
     let tries = 0;
-    while (document.querySelector('.sc-21a999a-8.bDuNSZ') && tries < 20) {
-      await new Promise(r => setTimeout(r, 300));
+    const maxTries = 40; // 10s
+    function isUploadIconVisible() {
+      return Array.from(document.querySelectorAll('i.google-symbols')).some(i => i.textContent.trim().toLowerCase() === 'upload');
+    }
+    while (!isUploadIconVisible() && tries < maxTries) {
+      await new Promise(r => setTimeout(r, 500));
       tries++;
     }
-    
+    if (!isUploadIconVisible()) {
+      debugLog('⚠️ Không thấy icon upload sau khi chờ. Vẫn tiếp tục.');
+    } else {
+      debugLog('✓ Đã thấy icon upload, asset list đã sẵn sàng.');
+    }
+
     // Chọn asset đầu tiên sau nút upload (data-index="1")
     const assetBtn = document.querySelector('[data-index="1"] button');
     if (!assetBtn) throw 'Không tìm thấy asset mới nhất';
-    
+
     assetBtn.click();
     debugLog('✓ Đã chọn asset mới nhất.');
-    
+
     await new Promise(r => setTimeout(r, 500));
-    
+
   } catch (e) {
     debugLog('❌ selectLatestAsset: Lỗi ' + e);
     throw e;
