@@ -5,13 +5,19 @@
   "description": "Tự động hoá prompt trong Google Flow SceneBuilder",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "tabs",
+    "sidePanel"
   ],
   "host_permissions": [
     "https://labs.google/*"
   ],
-  "action": {
-    "default_popup": "popup.html"
+  "action": {},
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {

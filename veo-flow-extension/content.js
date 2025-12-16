@@ -1,81 +1,64 @@
 /**
  * Scroll asset list (timeline) đến cuối để đảm bảo slider kéo được đến frame cuối cùng
- * UPDATED: Không dựa vào class động, tìm qua cấu trúc DOM
+ * Dựa trên logic tìm container có nhiều children thumbnails, sau đó scroll grandParent
  */
 async function scrollAssetListToEnd() {
   debugLog('📽 scrollAssetListToEnd: Đang scroll asset list đến cuối...');
   
   try {
-    // Tìm thumbnail container (div chứa nhiều div con có background-image hoặc img)
-    const allDivs = Array.from(document.querySelectorAll('div'));
-    
-    const thumbnailContainers = allDivs.filter(div => {
-      // Đếm số div con có background-image hoặc img (thumbnails)
-      const childrenWithImages = Array.from(div.children).filter(child => {
+    // Tìm các div có nhiều children (có thể là container chứa thumbnails)
+    // Không dùng class động, chỉ dựa vào số lượng children và cấu trúc DOM
+    const candidates = Array.from(document.querySelectorAll('div')).filter(div => {
+      // Tìm div có ít nhất 5 children (giống logic code console)
+      // Và children có thể là thumbnails (có button hoặc có background-image)
+      // Tối ưu: check button trước (nhanh hơn), chỉ tính style nếu không có button
+      const childThumbs = Array.from(div.children).filter(child => {
+        // Kiểm tra button trước (nhanh hơn querySelector)
+        if (child.querySelector('button')) return true;
+        // Chỉ tính style nếu không có button
         const style = window.getComputedStyle(child);
-        const hasBackgroundImage = style.backgroundImage && style.backgroundImage !== 'none';
-        const hasImg = child.querySelector('img');
-        return hasBackgroundImage || hasImg;
+        return style.backgroundImage && style.backgroundImage !== 'none';
       });
-      
-      return childrenWithImages.length >= 3; // Ít nhất 3 thumbnails
+      return childThumbs.length >= 5;
     });
     
-    if (thumbnailContainers.length === 0) {
-      debugLog('⚠️ Không tìm thấy thumbnail container');
+    if (candidates.length === 0) {
+      debugLog('⚠️ Không tìm thấy container có nhiều thumbnails');
       return;
     }
     
-    debugLog(`✓ Tìm thấy ${thumbnailContainers.length} thumbnail container(s)`);
+    // Lấy candidate đầu tiên
+    const container = candidates[0];
+    const parent = container.parentElement;
+    const grandParent = parent?.parentElement;
     
-    // Với mỗi container, tìm scrollable parent
-    let scrollSuccess = false;
-    
-    for (const container of thumbnailContainers) {
-      let current = container;
-      let depth = 0;
-      
-      while (current && depth < 10) {
-        const parent = current.parentElement;
-        if (!parent) break;
-        
-        // Check nếu parent có scroll ngang (horizontal scrollable)
-        const isHorizontalScrollable = parent.scrollWidth > parent.clientWidth + 5;
-        
-        if (isHorizontalScrollable) {
-          const maxScrollLeft = parent.scrollWidth - parent.clientWidth;
-          
-          debugLog(`✓ Tìm thấy scrollable parent tại depth ${depth}`);
-          debugLog(`📏 ScrollWidth: ${parent.scrollWidth}, ClientWidth: ${parent.clientWidth}, Max: ${maxScrollLeft}`);
-          
-          // Scroll đến cuối
-          parent.scrollLeft = maxScrollLeft;
-          debugLog(`✓ Đã scroll asset list đến cuối (scrollLeft = ${parent.scrollLeft})`);
-          
-          scrollSuccess = true;
-          
-          // Đợi UI cập nhật
-          await new Promise(r => setTimeout(r, 500));
-          
-          // Verify scroll đã đến cuối
-          if (parent.scrollLeft >= maxScrollLeft - 10) {
-            debugLog('✅ Scroll thành công!');
-          } else {
-            debugLog(`⚠️ Scroll chưa đến cuối: ${parent.scrollLeft} / ${maxScrollLeft}`);
-          }
-          
-          break;
-        }
-        
-        current = parent;
-        depth++;
-      }
-      
-      if (scrollSuccess) break;
+    if (!grandParent) {
+      debugLog('⚠️ Không tìm thấy grandParent');
+      return;
     }
     
-    if (!scrollSuccess) {
-      debugLog('⚠️ Không tìm thấy scrollable parent');
+    debugLog(`📊 ScrollWidth: ${grandParent.scrollWidth}, ClientWidth: ${grandParent.clientWidth}`);
+    debugLog(`📊 Current scrollLeft: ${grandParent.scrollLeft}`);
+    
+    const maxScrollLeft = grandParent.scrollWidth - grandParent.clientWidth;
+    debugLog(`📊 Max scrollLeft: ${maxScrollLeft}`);
+    
+    if (maxScrollLeft <= 0) {
+      debugLog('ℹ️ Không cần scroll (đã ở cuối hoặc không scroll được)');
+      return;
+    }
+    
+    // Set scrollLeft trực tiếp
+    grandParent.scrollLeft = maxScrollLeft;
+    await new Promise(r => setTimeout(r, 300));
+    
+    const finalScrollLeft = grandParent.scrollLeft;
+    debugLog(`📊 ScrollLeft sau khi set: ${finalScrollLeft}`);
+    
+    if (Math.abs(finalScrollLeft - maxScrollLeft) < 10) {
+      debugLog('✅ Scroll asset list thành công');
+    } else {
+      debugLog(`⚠️ Scroll chưa hết: ${finalScrollLeft} / ${maxScrollLeft}`);
     }
     
   } catch (e) {
@@ -88,6 +71,33 @@ async function scrollAssetListToEnd() {
 let isRunning = false;
 let prompts = [];
 let currentPromptIndex = 0;
+let totalPrompts = 0;
+let restartTimeoutId = null;
+let userStopped = false;
+
+function clearRestartTimer() {
+  if (restartTimeoutId) {
+    clearTimeout(restartTimeoutId);
+    restartTimeoutId = null;
+  }
+}
+
+function scheduleAutoRestart(reason) {
+  clearRestartTimer();
+  if (userStopped) {
+    debugLog(`⏸️ Bỏ qua auto-restart vì user đã stop (${reason})`);
+    return;
+  }
+  chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Waiting restart' });
+  debugLog(`⏳ Sẽ tự chạy lại flow sau 10s... (${reason})`);
+  restartTimeoutId = setTimeout(() => {
+    if (userStopped) return;
+    isRunning = true;
+    chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Running' });
+    debugLog('🔄 Đang tự chạy lại flow từ prompt #' + (currentPromptIndex + 1));
+    runFlow();
+  }, 10000);
+}
 
 // ============================================
 // MESSAGING & DEBUG
@@ -97,10 +107,16 @@ function debugLog(text) {
   chrome.runtime.sendMessage({ type: 'DEBUG_LOG', text });
 }
 
-// Helper: Đếm số lượng asset hiện tại
-function getAssetCount() {
-  return document.querySelectorAll('[data-index] button').length;
+function sendProgressUpdate() {
+  try {
+    chrome.runtime.sendMessage({
+      type: 'PROGRESS_UPDATE',
+      done: currentPromptIndex,
+      total: totalPrompts
+    });
+  } catch (_) {}
 }
+
 
 // Helper: Kiểm tra có progress % đang chạy không
 function isProgressRunning() {
@@ -117,6 +133,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       debugLog('Đã chạy rồi, bỏ qua START_FLOW');
       return;
     }
+    userStopped = false;
+    clearRestartTimer();
     // Kiểm tra nếu còn video đang render thì không cho chạy flow mới
     if (isProgressRunning()) {
       debugLog('⚠️ Đang có video render, không thể chạy flow mới!');
@@ -125,14 +143,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     prompts = message.prompts;
     currentPromptIndex = 0;
-        isRunning = true;
+    totalPrompts = prompts.length;
+    isRunning = true;
+    chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Running' });
     debugLog('Bắt đầu flow với ' + prompts.length + ' prompt');
+    sendProgressUpdate();
     runFlow();
     sendResponse && sendResponse({ ok: true });
   }
   
   if (message.type === 'STOP_FLOW') {
+    userStopped = true;
     isRunning = false;
+    clearRestartTimer();
+    chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
     debugLog('Đã dừng flow');
     sendResponse && sendResponse({ ok: true });
   }
@@ -144,37 +168,125 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ============================================
-// MAIN FLOW
+// HELPER: Đếm số lượng assets ưu tiên selector ổn định
 // ============================================
+function getAssetCount() {
+  try {
+    // Ưu tiên: tìm grid container trước
+    const grid = document.querySelector('.virtuoso-grid-list') || document.querySelector('[role="grid"]');
+    if (grid) {
+      const count = grid.querySelectorAll('[data-index] button').length;
+      if (count > 0) return count;
+    }
 
+    // Fallback: tìm tất cả button có data-index
+    const count = document.querySelectorAll('[data-index] button').length;
+    if (count > 0) return count;
+
+    // Fallback cuối: thumbnails có background-image (chỉ khi không tìm thấy button)
+    const thumbnails = Array.from(document.querySelectorAll('div')).slice(0, 200).filter(div => {
+      const style = window.getComputedStyle(div);
+      return style.backgroundImage && style.backgroundImage !== 'none' && style.backgroundImage.includes('url(');
+    });
+    return thumbnails.length;
+  } catch (e) {
+    debugLog('getAssetCount lỗi: ' + e);
+    return 0;
+  }
+}
+
+
+// ============================================
+// MAIN FLOW - UPDATED
+// ============================================
 async function runFlow() {
   while (isRunning && currentPromptIndex < prompts.length) {
+    if (userStopped) {
+      debugLog('⏹️ Flow dừng theo yêu cầu người dùng.');
+      isRunning = false;
+      chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
+      return;
+    }
     try {
       debugLog('🎬 Đang xử lý prompt #' + (currentPromptIndex + 1));
+
+      // Đếm số lượng asset TRƯỚC KHI chờ video render
+      const prevAssetCount = getAssetCount();
+      debugLog('📊 Số assets trước khi chờ render: ' + prevAssetCount);
+
+      let success = false;
+      let retryCount = 0;
       
-          // Chờ video render xong (nếu không phải prompt đầu tiên)
-          if (currentPromptIndex > 0) {
-            await waitForVideoRendered();
-          }
-      
+      while (!success && retryCount < 5 && !userStopped) {
+        try {
+          // Luôn scroll asset list đến cuối trước mỗi prompt
+          await scrollAssetListToEnd();
           await saveFrameAsAsset();
           await openImagePicker();
           await selectLatestAsset();
           await inputPrompt(prompts[currentPromptIndex]);
           await clickGenerate();
 
-      debugLog('✅ Đã xong prompt #' + (currentPromptIndex + 1));
+          // Chờ asset mới xuất hiện (tối đa 3 phút)
+          debugLog('⏳ Đang chờ asset mới xuất hiện...');
+          let waitTries = 0;
+          let newAssetCount = getAssetCount();
+          
+          while (newAssetCount <= prevAssetCount && waitTries < 180) { // 180 * 1s = 180s = 3 phút
+            await new Promise(r => setTimeout(r, 1000));
+            newAssetCount = getAssetCount();
+            waitTries++;
+            
+            // Log progress mỗi 10s
+            if (waitTries % 20 === 0) {
+              debugLog(`  Đã chờ ${waitTries / 2}s... (${prevAssetCount} → ${newAssetCount})`);
+            }
+          }
+          
+          if (newAssetCount > prevAssetCount) {
+            debugLog('✅ Đã xong prompt #' + (currentPromptIndex + 1) + ', asset mới đã được thêm (' + prevAssetCount + ' → ' + newAssetCount + ')');
+            success = true;
             currentPromptIndex++;
+            sendProgressUpdate();
+          } else {
+            debugLog('⚠️ Asset mới chưa được thêm sau 3 phút, sẽ retry prompt này.');
+            retryCount++;
+            
+            if (retryCount < 5) {
+              debugLog(`🔄 Retry lần ${retryCount}/5...`);
+              await new Promise(r => setTimeout(r, 2000));
+            }
+          }
+        } catch (e) {
+          debugLog('❌ Lỗi khi chạy prompt: ' + e);
+          retryCount++;
+          
+          if (retryCount < 5) {
+            debugLog(`🔄 Retry lần ${retryCount}/5 sau lỗi...`);
+            await new Promise(r => setTimeout(r, 2000));
+          }
+        }
+      }
       
+      if (!success && !userStopped) {
+        debugLog('❌ Không thể tạo asset mới sau ' + retryCount + ' lần thử.');
+        debugLog('⏸️ Dừng flow tạm thời.');
+        isRunning = false;
+        scheduleAutoRestart('retry hết');
+        return;
+      }
+
     } catch (e) {
-      debugLog('❌ Lỗi: ' + e);
+      debugLog('❌ Lỗi không mong đợi: ' + e);
       isRunning = false;
-      break;
+      scheduleAutoRestart('exception');
+      return;
     }
   }
 
-      debugLog('🏁 Kết thúc flow.');
-    isRunning = false;
+  debugLog('🎉 Kết thúc flow.');
+  isRunning = false;
+  chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Idle' });
 }
 
 // ============================================
@@ -182,22 +294,29 @@ async function runFlow() {
 // ============================================
 
 /**
- * Chờ element xuất hiện trong DOM
+ * Chờ element xuất hiện trong DOM (kể cả thay đổi attributes hiển thị)
  */
-function waitForElement(selector, timeout = 10000) {
+function waitForElement(selector, timeout = 10000, { visible = false } = {}) {
   return new Promise((resolve, reject) => {
-    const el = document.querySelector(selector);
-    if (el) return resolve(el);
+    const pick = () => {
+      const el = document.querySelector(selector);
+      if (!el) return null;
+      if (visible && el.offsetParent === null) return null;
+      return el;
+    };
+
+    const first = pick();
+    if (first) return resolve(first);
     
     const observer = new MutationObserver(() => {
-      const el2 = document.querySelector(selector);
+      const el2 = pick();
       if (el2) {
         observer.disconnect();
         resolve(el2);
       }
     });
     
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'aria-hidden', 'hidden'] });
     
     setTimeout(() => {
       observer.disconnect();
@@ -209,71 +328,6 @@ function waitForElement(selector, timeout = 10000) {
 // ============================================
 // AUTOMATION STEPS
 // ============================================
-
-/**
- * STEP 1: Chờ video render xong
- * Dấu hiệu: 
- * - Không còn % progress (50%, 75%, etc)
- * - Nút save frame (icon add) xuất hiện
- * - Video đã có trong timeline
- */
-async function waitForVideoRendered() {
-  debugLog('⏳ Chờ video render xong...');
-  
-  try {
-        // Bước 1: Chờ progress biến mất
-    debugLog('📊 Chờ progress bar biến mất...');
-    let attempts = 0;
-    const maxAttempts = 120; // 2 phút (120 * 1000ms)
-    
-    while (attempts < maxAttempts) {
-      // Tìm progress text (50%, 75%, etc)
-      const progressElements = document.querySelectorAll('*');
-      let hasProgress = false;
-      
-      for (const el of progressElements) {
-        const text = el.textContent.trim();
-        // Check nếu có text dạng "50%" hoặc "75%"
-        if (/^\d+%$/.test(text) && el.offsetParent !== null) {
-          hasProgress = true;
-          break;
-        }
-      }
-      
-      if (!hasProgress) {
-        debugLog('✓ Progress đã biến mất');
-        break;
-      }
-      
-      await new Promise(r => setTimeout(r, 1000));
-      attempts++;
-    }
-    
-    if (attempts >= maxAttempts) {
-      throw 'Timeout chờ video render (2 phút)';
-    }
-
-    // Bước 2: Chờ thêm 2s để chắc chắn
-    await new Promise(r => setTimeout(r, 2000));
-
-    // Bước 3: Kiểm tra nút save frame đã xuất hiện
-    debugLog('🔍 Kiểm tra nút save frame...');
-    const saveBtn = Array.from(
-      document.querySelectorAll('button[aria-haspopup="menu"] i.google-symbols')
-    ).find(i => i.textContent.trim() === 'add');
-    
-    if (!saveBtn) {
-      debugLog('⚠️ Chưa thấy nút save frame, chờ thêm 2s...');
-      await new Promise(r => setTimeout(r, 2000));
-    }
-    
-    debugLog('✓ Video đã render xong.');
-    
-  } catch (e) {
-    debugLog('⚠️ waitForVideoRendered: Lỗi ' + e);
-    throw e;
-  }
-}
 
 /**
  * STEP 2: Kéo slider đến cuối video và save frame as asset
@@ -380,7 +434,6 @@ async function saveFrameAsAsset() {
   }
 }
 
-// XÓA hàm seekToEndOfVideoMainWorld cũ vì đã inline vào script injection
 
 /**
  * STEP 3: Mở asset picker (có thể bỏ qua nếu tự hiện)
