@@ -1,5 +1,9 @@
 // popup.js
 
+// Local storage keys
+const STORAGE_KEY = 'veo3_prompt_list';
+const LOG_STORAGE_KEY = 'veo3_log';
+
 // Format timestamp
 function getTimestamp() {
   const now = new Date();
@@ -11,13 +15,112 @@ function getTimestamp() {
   });
 }
 
-// Log to textarea
+// Log to textarea + persist to localStorage
 function log(text) {
-  const logArea = document.getElementById('log');
   const timestamp = getTimestamp();
+  const logArea = document.getElementById('log');
   logArea.value += `[${timestamp}] ${text}\n`;
   logArea.scrollTop = logArea.scrollHeight;
+  try {
+    localStorage.setItem(LOG_STORAGE_KEY, logArea.value);
+  } catch (e) {
+    console.warn('Không thể lưu log vào localStorage:', e);
+  }
 }
+
+// Reset log khi người dùng thay đổi prompt
+function resetLog() {
+  const logArea = document.getElementById('log');
+  if (!logArea) return;
+  logArea.value = '';
+  try {
+    localStorage.removeItem(LOG_STORAGE_KEY);
+  } catch (e) {
+    console.warn('Không thể xóa log khỏi localStorage:', e);
+  }
+}
+
+// ============================================
+// LOAD PROMPTS FROM LOCALSTORAGE
+// ============================================
+function loadSavedPrompts() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      document.getElementById('promptList').value = saved;
+      log('✅ Đã load prompts đã lưu');
+    }
+  } catch (e) {
+    log('⚠️ Lỗi khi load prompts: ' + e.message);
+  }
+}
+
+// ============================================
+// LOAD LOG FROM LOCALSTORAGE
+// ============================================
+function loadSavedLog() {
+  try {
+    const savedLog = localStorage.getItem(LOG_STORAGE_KEY);
+    if (savedLog) {
+      const logArea = document.getElementById('log');
+      logArea.value = savedLog;
+      logArea.scrollTop = logArea.scrollHeight;
+    }
+  } catch (e) {
+    console.warn('Lỗi khi load log từ localStorage:', e);
+  }
+}
+
+// ============================================
+// SAVE PROMPTS TO LOCALSTORAGE
+// ============================================
+function savePrompts() {
+  try {
+    const content = document.getElementById('promptList').value.trim();
+    localStorage.setItem(STORAGE_KEY, content);
+  } catch (e) {
+    log('⚠️ Lỗi khi lưu prompts: ' + e.message);
+  }
+}
+
+// ============================================
+// AUTO-SAVE ON INPUT CHANGE (debounced)
+// ============================================
+let saveTimeout;
+const promptListEl = document.getElementById('promptList');
+
+promptListEl.addEventListener('input', () => {
+  // Mỗi lần sửa prompt, reset toàn bộ log
+  resetLog();
+
+  clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    savePrompts();
+    log('💾 Đã tự động lưu prompts');
+  }, 1000);
+});
+
+// Khi người dùng paste prompt mới: ghi đè toàn bộ nội dung cũ
+promptListEl.addEventListener('paste', (event) => {
+  try {
+    const clipboardData = event.clipboardData || window.clipboardData;
+    if (!clipboardData) return;
+
+    const text = (clipboardData.getData('text') || '').trim();
+    if (!text) return;
+
+    event.preventDefault();
+
+    // Reset log khi dán prompt mới
+    resetLog();
+
+    promptListEl.value = text;
+    savePrompts();
+    log('📋 Đã dán prompt mới (ghi đè danh sách cũ).');
+  } catch (e) {
+    console.warn('Lỗi khi xử lý paste prompt:', e);
+  }
+});
 
 // Lắng nghe message từ content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -41,6 +144,10 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     log('⚠️ Không có prompt hợp lệ!');
     return;
   }
+  
+  // Lưu prompts trước khi start
+  savePrompts();
+  log('💾 Đã lưu prompts');
   
   log(`Gửi START_FLOW với ${prompts.length} prompt...`);
   
@@ -158,5 +265,9 @@ document.getElementById('testBtn')?.addEventListener('click', async () => {
   }
 });
 
-// Load khi popup mở
+// ============================================
+// INIT: Load saved prompts + logs when popup opens
+// ============================================
+loadSavedPrompts();
+loadSavedLog();
 log('Popup đã load. Sẵn sàng sử dụng.');
