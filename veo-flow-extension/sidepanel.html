@@ -52,6 +52,42 @@
     #veo-log {
       height: 180px;
     }
+    #image-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #image-preview {
+      width: 100%;
+      max-height: 150px;
+      object-fit: contain;
+      border-radius: 6px;
+      border: 1px solid #1e293b;
+      display: none;
+    }
+    #image-preview.visible {
+      display: block;
+    }
+    input[type="file"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px;
+      background: #0b1220;
+      color: #e2e8f0;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    input[type="file"]::-webkit-file-upload-button {
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 8px;
+    }
       #controls {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -87,6 +123,11 @@
       <div id="title">Veo Flow Assistant</div>
       <div id="status">Idle</div>
     </div>
+  </div>
+  <div class="label">Ảnh bắt đầu (tùy chọn - chỉ khi chưa có video)</div>
+  <div id="image-section">
+    <input type="file" id="veo-image-input" accept="image/*">
+    <img id="image-preview" alt="Preview">
   </div>
   <div class="label">Prompts (mỗi dòng 1 prompt)</div>
   <textarea id="veo-prompts" placeholder="Wide cinematic shot..."></textarea>

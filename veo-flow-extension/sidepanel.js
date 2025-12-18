@@ -6,6 +6,9 @@ const logArea = document.getElementById('veo-log');
 const statusEl = document.getElementById('status');
 const startBtn = document.getElementById('veo-start');
 const stopBtn = document.getElementById('veo-stop');
+const imageInput = document.getElementById('veo-image-input');
+const imagePreview = document.getElementById('image-preview');
+let selectedImageBase64 = null;
 
 // Format timestamp
 function getTimestamp() {
@@ -46,6 +49,35 @@ promptsBox.addEventListener('input', () => {
   }, 1000);
 });
 
+// Handle image input
+imageInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) {
+    imagePreview.classList.remove('visible');
+    selectedImageBase64 = null;
+    return;
+  }
+  
+  if (!file.type.startsWith('image/')) {
+    log('⚠️ Vui lòng chọn file ảnh');
+    return;
+  }
+  
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    selectedImageBase64 = event.target.result; // data URL (base64)
+    imagePreview.src = selectedImageBase64;
+    imagePreview.classList.add('visible');
+    log('✓ Đã chọn ảnh: ' + file.name);
+  };
+  reader.onerror = () => {
+    log('❌ Lỗi đọc file ảnh');
+    selectedImageBase64 = null;
+    imagePreview.classList.remove('visible');
+  };
+  reader.readAsDataURL(file);
+});
+
 // Start button
 startBtn.addEventListener('click', async () => {
   const list = promptsBox.value.split('\n').map(p => p.trim()).filter(Boolean);
@@ -72,13 +104,22 @@ startBtn.addEventListener('click', async () => {
   
   log(`Gửi START_FLOW với ${list.length} prompt...`);
   
+  // Prepare message
+  const message = {
+    type: 'START_FLOW',
+    prompts: list
+  };
+  
+  // Add image if selected
+  if (selectedImageBase64) {
+    message.initialImageFile = selectedImageBase64;
+    log('📷 Đã thêm ảnh vào message');
+  }
+  
   // Send message to content script
   chrome.tabs.sendMessage(
     tab.id,
-    { 
-      type: 'START_FLOW', 
-      prompts: list 
-    },
+    message,
     (response) => {
       if (chrome.runtime.lastError) {
         log('❌ Lỗi: ' + chrome.runtime.lastError.message);
