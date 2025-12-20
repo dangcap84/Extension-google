@@ -1,65 +1,139 @@
 /**
  * Scroll asset list (timeline) đến cuối để đảm bảo slider kéo được đến frame cuối cùng
- * Dựa trên logic tìm container có nhiều children thumbnails, sau đó scroll grandParent
+ * @returns {Promise<void>}
  */
 async function scrollAssetListToEnd() {
   debugLog('📽 scrollAssetListToEnd: Đang scroll asset list đến cuối...');
   
   try {
-    // Tìm các div có nhiều children (có thể là container chứa thumbnails)
-    // Không dùng class động, chỉ dựa vào số lượng children và cấu trúc DOM
-    const candidates = Array.from(document.querySelectorAll('div')).filter(div => {
-      // Tìm div có ít nhất 5 children (giống logic code console)
-      // Và children có thể là thumbnails (có button hoặc có background-image)
-      // Tối ưu: check button trước (nhanh hơn), chỉ tính style nếu không có button
-      const childThumbs = Array.from(div.children).filter(child => {
-        // Kiểm tra button trước (nhanh hơn querySelector)
-        if (child.querySelector('button')) return true;
-        // Chỉ tính style nếu không có button
-        const style = window.getComputedStyle(child);
-        return style.backgroundImage && style.backgroundImage !== 'none';
+    // Tìm asset list container
+    const assetList = document.querySelector('.virtuoso-grid-list') || 
+                      document.querySelector('[role="grid"]');
+    
+    if (!assetList) {
+      debugLog('⚠️ Không tìm thấy asset list container');
+      return;
+    }
+    
+    // Tìm element có scrollbar - có thể là parent của asset list
+    let scrollElement = null;
+    
+    // Kiểm tra asset list và các parent elements (chỉ tìm scroll ngang)
+    let current = assetList;
+    for (let i = 0; i < 10 && current; i++) {
+      const hasHorizontalScroll = current.scrollWidth > current.clientWidth;
+      
+      if (hasHorizontalScroll) {
+        scrollElement = current;
+        debugLog(`📊 Tìm thấy scroll element ở level ${i}: ${current.tagName}${current.className ? '.' + current.className.split(' ')[0] : ''}`);
+        break;
+      }
+      current = current.parentElement;
+    }
+    
+    // Nếu không tìm thấy, tìm tất cả elements có scrollbar ngang
+    if (!scrollElement) {
+      const allElements = Array.from(document.querySelectorAll('*'));
+      const scrollableElements = allElements.filter(el => {
+        const style = window.getComputedStyle(el);
+        const hasOverflow = style.overflow === 'auto' || style.overflow === 'scroll' || 
+                           style.overflowX === 'auto' || style.overflowX === 'scroll';
+        const hasHorizontalScroll = el.scrollWidth > el.clientWidth;
+        return hasOverflow && hasHorizontalScroll && el.offsetParent !== null;
       });
-      return childThumbs.length >= 5;
-    });
+      
+      // Tìm element gần asset list nhất
+      if (scrollableElements.length > 0) {
+        scrollElement = scrollableElements[0];
+        debugLog(`📊 Tìm thấy scroll element từ overflow: ${scrollElement.tagName}`);
+      }
+    }
     
-    if (candidates.length === 0) {
-      debugLog('⚠️ Không tìm thấy container có nhiều thumbnails');
+    if (!scrollElement) {
+      debugLog('⚠️ Không tìm thấy element có scrollbar');
       return;
     }
     
-    // Lấy candidate đầu tiên
-    const container = candidates[0];
-    const parent = container.parentElement;
-    const grandParent = parent?.parentElement;
+    // Scroll theo chiều ngang (scrollLeft) - quan trọng nhất cho timeline
+    const maxScrollLeft = scrollElement.scrollWidth - scrollElement.clientWidth;
+    const initialScrollLeft = scrollElement.scrollLeft;
     
-    if (!grandParent) {
-      debugLog('⚠️ Không tìm thấy grandParent');
-      return;
-    }
-    
-    debugLog(`📊 ScrollWidth: ${grandParent.scrollWidth}, ClientWidth: ${grandParent.clientWidth}`);
-    debugLog(`📊 Current scrollLeft: ${grandParent.scrollLeft}`);
-    
-    const maxScrollLeft = grandParent.scrollWidth - grandParent.clientWidth;
-    debugLog(`📊 Max scrollLeft: ${maxScrollLeft}`);
+    debugLog(`📊 Element: ${scrollElement.tagName}${scrollElement.className ? '.' + scrollElement.className.split(' ').slice(0, 2).join('.') : ''}`);
+    debugLog(`📊 ScrollWidth: ${scrollElement.scrollWidth}, ClientWidth: ${scrollElement.clientWidth}`);
+    debugLog(`📊 Initial scrollLeft: ${initialScrollLeft}, Max: ${maxScrollLeft}`);
     
     if (maxScrollLeft <= 0) {
-      debugLog('ℹ️ Không cần scroll (đã ở cuối hoặc không scroll được)');
-      return;
-    }
-    
-    // Set scrollLeft trực tiếp
-    grandParent.scrollLeft = maxScrollLeft;
-    await new Promise(r => setTimeout(r, 300));
-    
-    const finalScrollLeft = grandParent.scrollLeft;
-    debugLog(`📊 ScrollLeft sau khi set: ${finalScrollLeft}`);
-    
-    if (Math.abs(finalScrollLeft - maxScrollLeft) < 10) {
-      debugLog('✅ Scroll asset list thành công');
+      debugLog('ℹ️ Không cần scroll ngang (đã ở cuối hoặc không scroll được)');
     } else {
-      debugLog(`⚠️ Scroll chưa hết: ${finalScrollLeft} / ${maxScrollLeft}`);
+      // Scroll với nhiều cách và từng bước
+      let scrollTries = 0;
+      const maxScrollTries = 20;
+      let success = false;
+      
+      while (scrollTries < maxScrollTries && !success) {
+        const currentScrollLeft = scrollElement.scrollLeft;
+        const remaining = maxScrollLeft - currentScrollLeft;
+        
+        if (remaining <= 2) {
+          success = true;
+          debugLog('✅ Scroll asset list thành công (ngang)');
+          break;
+        }
+        
+        // Scroll từng bước lớn để đảm bảo đến cuối
+        const scrollStep = Math.min(remaining, Math.max(1000, remaining * 0.5));
+        
+        // Cách 1: scrollBy với step lớn
+        scrollElement.scrollBy({
+          left: scrollStep,
+          behavior: 'auto'
+        });
+        await sleep(50);
+        
+        // Cách 2: Set scrollLeft trực tiếp
+        scrollElement.scrollLeft = currentScrollLeft + scrollStep;
+        await sleep(50);
+        
+        // Cách 3: scrollTo với giá trị lớn
+        if (scrollTries % 3 === 0) {
+          scrollElement.scrollTo({
+            left: scrollElement.scrollWidth,
+            behavior: 'auto'
+          });
+          await sleep(100);
+        }
+        
+        const newScrollLeft = scrollElement.scrollLeft;
+        const newRemaining = maxScrollLeft - newScrollLeft;
+        
+        if (scrollTries % 5 === 0) {
+          debugLog(`📊 Lần thử ${scrollTries + 1}: scrollLeft = ${newScrollLeft.toFixed(0)}, còn lại = ${newRemaining.toFixed(0)}`);
+        }
+        
+        // Nếu không tiến bộ, thử scroll trực tiếp đến cuối
+        if (Math.abs(newScrollLeft - currentScrollLeft) < 1) {
+          scrollElement.scrollLeft = scrollElement.scrollWidth;
+          await sleep(100);
+        }
+        
+        scrollTries++;
+      }
+      
+      if (!success) {
+        const finalScrollLeft = scrollElement.scrollLeft;
+        debugLog(`⚠️ Scroll ngang chưa hết sau ${maxScrollTries} lần thử: ${finalScrollLeft.toFixed(0)} / ${maxScrollLeft.toFixed(0)}`);
+        // Thử lần cuối: scroll trực tiếp
+        scrollElement.scrollLeft = scrollElement.scrollWidth;
+        await sleep(200);
+        const finalCheck = scrollElement.scrollWidth - scrollElement.clientWidth - scrollElement.scrollLeft;
+        if (finalCheck <= 5) {
+          debugLog('✅ Scroll thành công sau lần thử cuối');
+        }
+      }
     }
+    
+    // Đợi một chút để đảm bảo scroll đã hoàn tất
+    await sleep(DELAYS.MEDIUM);
     
   } catch (e) {
     debugLog('⚠️ scrollAssetListToEnd lỗi: ' + e);
@@ -67,6 +141,180 @@ async function scrollAssetListToEnd() {
 }
 // content.js
 // Chrome Extension for Google Flow - Veo 3 Auto Prompt Automation
+
+// ============================================
+// CONSTANTS
+// ============================================
+
+const TIMEOUTS = {
+  ELEMENT_WAIT: 10000,
+  SLIDER_DRAG: 5000,
+  ASSET_WAIT: 180000, // 3 phút
+  VIDEO_RENDER: 300000, // 5 phút
+  AUTO_RESTART: 10000,
+  THUMBNAIL_CHECK: 10000, // 10s
+  MENU_FRAME_CLOSE: 15000, // 15s
+  CROP_SAVE_BUTTON: 10000, // 10s
+  NOTICE_DIALOG: 10000, // 10s
+  UPLOAD_ICON: 20000, // 20s
+  RETRY_DELAY: 2000,
+  UI_STABILIZE: 2000,
+  SHORT_DELAY: 500,
+  MEDIUM_DELAY: 1000
+};
+
+const RETRY_LIMITS = {
+  IMAGE_FLOW: 5,
+  PROMPT: 5,
+  CROP_SAVE_BUTTON: 50,
+  NOTICE_DIALOG: 20,
+  THUMBNAIL_CHECK: 20,
+  MENU_FRAME: 30,
+  UPLOAD_ICON: 40
+};
+
+const DELAYS = {
+  SHORT: 100,
+  MEDIUM: 300,
+  NORMAL: 500,
+  LONG: 1000,
+  STABILIZE: 2000
+};
+
+// ============================================
+// LANGUAGE MAPPINGS
+// ============================================
+
+const TEXT_MAPPINGS = {
+  en: {
+    CROP_AND_SAVE: ['Crop and Save', 'Crop and save', 'crop and save'],
+    I_AGREE: ['I agree', 'I Agree', 'agree'],
+    SAVE_FRAME: ['save', 'frame'],
+    FRAME_TO_VIDEO: ['Frame to Video', 'Frames to Video'],
+    TEXT_TO_VIDEO: ['Text to Video'],
+    UPLOAD: ['upload', 'browse'],
+    CANCEL: ['cancel'],
+    CLOSE: ['close'],
+    NOTICE: ['Notice', 'necessary rights', 'Prohibited Use Policy']
+  },
+  ja: {
+    CROP_AND_SAVE: ['クロップして保存', 'クロップと保存', '保存'],
+    I_AGREE: ['同意する', '同意', '承諾'],
+    SAVE_FRAME: ['保存', 'フレーム'],
+    FRAME_TO_VIDEO: ['フレームから動画', 'フレームを動画に'],
+    TEXT_TO_VIDEO: ['テキストから動画'],
+    UPLOAD: ['アップロード', 'アップロードする'],
+    CANCEL: ['キャンセル', '取消'],
+    CLOSE: ['閉じる', '閉'],
+    NOTICE: ['通知', '注意事項', '利用規約']
+  }
+};
+
+/**
+ * Auto-detect language from page
+ * @returns {string} Language code ('en' or 'ja')
+ */
+function detectLanguage() {
+  const lang = document.documentElement.lang || navigator.language || 'en';
+  return lang.startsWith('ja') ? 'ja' : 'en';
+}
+
+/**
+ * Check if text matches any of the language-specific strings
+ * @param {string} text - Text to check
+ * @param {string} key - Key in TEXT_MAPPINGS (e.g., 'CROP_AND_SAVE')
+ * @param {string} lang - Language code ('en' or 'ja')
+ * @returns {boolean}
+ */
+function matchesText(text, key, lang = null) {
+  if (!lang) lang = detectLanguage();
+  const mappings = TEXT_MAPPINGS[lang] || TEXT_MAPPINGS.en;
+  const patterns = mappings[key] || [];
+  
+  const lowerText = text.toLowerCase();
+  return patterns.some(pattern => 
+    lowerText.includes(pattern.toLowerCase())
+  );
+}
+
+/**
+ * Find button by text matching with language support
+ * @param {NodeList|Array} buttons - Buttons to search
+ * @param {string} key - Key in TEXT_MAPPINGS
+ * @param {Object} options - Additional options { lang, requireAll }
+ * @returns {HTMLElement|null}
+ */
+function findButtonByText(buttons, key, options = {}) {
+  const lang = options.lang || detectLanguage();
+  const requireAll = options.requireAll || false; // For "Crop AND Save"
+  
+  for (const btn of buttons) {
+    const text = btn.textContent.trim();
+    
+    if (requireAll) {
+      // For "Crop and Save" - need both words
+      const mappings = TEXT_MAPPINGS[lang] || TEXT_MAPPINGS.en;
+      const patterns = mappings[key] || [];
+      // Check if text contains all patterns (for SAVE_FRAME: both 'save' and 'frame')
+      if (patterns.length > 1) {
+        const allMatch = patterns.every(pattern => 
+          text.toLowerCase().includes(pattern.toLowerCase())
+        );
+        if (allMatch) return btn;
+      } else {
+        // Single pattern, just check if it matches
+        if (matchesText(text, key, lang)) return btn;
+      }
+    } else {
+      if (matchesText(text, key, lang)) return btn;
+    }
+  }
+  
+  // Fallback: try English if current language failed
+  if (lang !== 'en') {
+    return findButtonByText(buttons, key, { ...options, lang: 'en' });
+  }
+  
+  return null;
+}
+
+/**
+ * Find button by aria-label or data attributes (language-independent)
+ * @param {NodeList|Array} buttons - Buttons to search
+ * @param {string|Array} ariaLabels - aria-label values to match
+ * @param {string|Array} dataAttrs - data-* attribute values to match
+ * @returns {HTMLElement|null}
+ */
+function findButtonByAttributes(buttons, ariaLabels = null, dataAttrs = null) {
+  const ariaArray = ariaLabels ? (Array.isArray(ariaLabels) ? ariaLabels : [ariaLabels]) : [];
+  const dataArray = dataAttrs ? (Array.isArray(dataAttrs) ? dataAttrs : [dataAttrs]) : [];
+  
+  for (const btn of buttons) {
+    // Check aria-label
+    if (ariaArray.length > 0) {
+      const ariaLabel = btn.getAttribute('aria-label');
+      if (ariaLabel && ariaArray.some(label => 
+        ariaLabel.toLowerCase().includes(label.toLowerCase())
+      )) {
+        return btn;
+      }
+    }
+    
+    // Check data-* attributes
+    if (dataArray.length > 0) {
+      for (const attr of dataArray) {
+        const value = btn.getAttribute(attr);
+        if (value) return btn;
+      }
+    }
+  }
+  
+  return null;
+}
+
+// ============================================
+// STATE MANAGEMENT
+// ============================================
 
 let isRunning = false;
 let prompts = [];
@@ -83,6 +331,157 @@ function clearRestartTimer() {
   }
 }
 
+/**
+ * Kiểm tra localStorage có sẵn sàng không
+ * LƯU Ý: Chỉ dùng localStorage, KHÔNG dùng chrome.storage (gây lỗi trong content script)
+ */
+function isLocalStorageAvailable() {
+  try {
+    if (typeof Storage === 'undefined' || typeof localStorage === 'undefined') {
+      return false;
+    }
+    // Test xem localStorage có hoạt động không
+    const test = '__storage_test__';
+    localStorage.setItem(test, test);
+    localStorage.removeItem(test);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Lưu state vào localStorage để restore sau khi reload
+ * LƯU Ý: Chỉ dùng localStorage, KHÔNG dùng chrome.storage (gây lỗi trong content script)
+ */
+async function saveFlowState() {
+  try {
+    // Kiểm tra localStorage có sẵn sàng không
+    if (typeof localStorage === 'undefined' || !isLocalStorageAvailable()) {
+      console.error('⚠️ localStorage không sẵn sàng, không thể lưu state');
+      try {
+        debugLog('⚠️ localStorage không sẵn sàng, không thể lưu state');
+      } catch (_) {}
+      return false;
+    }
+    
+    const stateData = {
+      prompts: prompts,
+      currentPromptIndex: currentPromptIndex,
+      totalPrompts: totalPrompts,
+      initialImageFile: initialImageFile,
+      isRunning: isRunning
+    };
+    
+    // CHỈ dùng localStorage, KHÔNG dùng chrome.storage
+    localStorage.setItem('veoFlowState', JSON.stringify(stateData));
+    
+    try {
+      debugLog('💾 Đã lưu state flow');
+    } catch (e) {
+      console.log('💾 Đã lưu state flow');
+    }
+    return true;
+  } catch (e) {
+    console.error('⚠️ Lỗi khi lưu state: ', e);
+    try {
+      debugLog('⚠️ Lỗi khi lưu state: ' + e);
+    } catch (_) {}
+    return false;
+  }
+}
+
+/**
+ * Restore state từ localStorage sau khi reload
+ * LƯU Ý: Chỉ dùng localStorage, KHÔNG dùng chrome.storage (gây lỗi trong content script)
+ */
+async function restoreFlowState() {
+  try {
+    // Kiểm tra localStorage có sẵn sàng không
+    if (typeof localStorage === 'undefined' || !isLocalStorageAvailable()) {
+      console.error('⚠️ localStorage không sẵn sàng, không thể restore state');
+      try {
+        debugLog('⚠️ localStorage không sẵn sàng, không thể restore state');
+      } catch (_) {}
+      return false;
+    }
+    
+    // CHỈ đọc từ localStorage, KHÔNG dùng chrome.storage
+    const saved = localStorage.getItem('veoFlowState');
+    if (!saved) {
+      return false;
+    }
+    
+    let state = null;
+    try {
+      state = JSON.parse(saved);
+    } catch (e) {
+      console.error('⚠️ Lỗi khi parse state từ localStorage: ', e);
+      localStorage.removeItem('veoFlowState');
+      return false;
+    }
+    
+    if (state) {
+      prompts = state.prompts || [];
+      currentPromptIndex = state.currentPromptIndex || 0;
+      totalPrompts = state.totalPrompts || 0;
+      initialImageFile = state.initialImageFile || null;
+      isRunning = state.isRunning || false;
+      
+      // Kiểm tra tính hợp lệ của state
+      if (prompts.length === 0 || currentPromptIndex < 0 || currentPromptIndex >= prompts.length) {
+        console.log('⚠️ State không hợp lệ, xóa state...');
+        await clearFlowState();
+        return false;
+      }
+      
+      try {
+        debugLog(`🔄 Đã restore state: prompt ${currentPromptIndex + 1}/${totalPrompts}`);
+      } catch (e) {
+        console.log(`🔄 Đã restore state: prompt ${currentPromptIndex + 1}/${totalPrompts}`);
+      }
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.error('⚠️ Lỗi khi restore state: ', e);
+    try {
+      debugLog('⚠️ Lỗi khi restore state: ' + e);
+    } catch (_) {}
+    return false;
+  }
+}
+
+/**
+ * Xóa state đã lưu
+ * LƯU Ý: Chỉ dùng localStorage, KHÔNG dùng chrome.storage (gây lỗi trong content script)
+ */
+async function clearFlowState() {
+  try {
+    // Kiểm tra localStorage có sẵn sàng không
+    if (typeof localStorage === 'undefined' || !isLocalStorageAvailable()) {
+      console.error('⚠️ localStorage không sẵn sàng, không thể xóa state');
+      return false;
+    }
+    
+    // CHỈ xóa từ localStorage, KHÔNG dùng chrome.storage
+    localStorage.removeItem('veoFlowState');
+    
+    try {
+      debugLog('🗑️ Đã xóa state flow');
+    } catch (e) {
+      console.log('🗑️ Đã xóa state flow');
+    }
+    return true;
+  } catch (e) {
+    console.error('⚠️ Lỗi khi xóa state: ', e);
+    try {
+      debugLog('⚠️ Lỗi khi xóa state: ' + e);
+    } catch (_) {}
+    return false;
+  }
+}
+
 function scheduleAutoRestart(reason) {
   clearRestartTimer();
   if (userStopped) {
@@ -90,14 +489,148 @@ function scheduleAutoRestart(reason) {
     return;
   }
   chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Waiting restart' });
-  debugLog(`⏳ Sẽ tự chạy lại flow sau 10s... (${reason})`);
+  debugLog(`⏳ Sẽ tự chạy lại flow sau ${TIMEOUTS.AUTO_RESTART/1000}s... (${reason})`);
   restartTimeoutId = setTimeout(() => {
     if (userStopped) return;
     isRunning = true;
     chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Running' });
     debugLog('🔄 Đang tự chạy lại flow từ prompt #' + (currentPromptIndex + 1));
     runFlow();
-  }, 10000);
+  }, TIMEOUTS.AUTO_RESTART);
+}
+
+// ============================================
+// DOM CACHE
+// ============================================
+
+let cachedTextarea = null;
+let cachedPromptArea = null;
+
+/**
+ * Get textarea element with caching
+ * @returns {HTMLElement|null}
+ */
+function getTextarea() {
+  if (!cachedTextarea || !document.contains(cachedTextarea)) {
+    cachedTextarea = document.querySelector('#PINHOLE_TEXT_AREA_ELEMENT_ID');
+    cachedPromptArea = cachedTextarea ? (cachedTextarea.closest('div') || cachedTextarea.parentElement) : null;
+  }
+  return cachedTextarea;
+}
+
+/**
+ * Get prompt area with caching
+ * @returns {HTMLElement|null}
+ */
+function getPromptArea() {
+  if (!cachedPromptArea || !document.contains(cachedPromptArea)) {
+    const textarea = getTextarea();
+    cachedPromptArea = textarea ? (textarea.closest('div') || textarea.parentElement) : null;
+  }
+  return cachedPromptArea;
+}
+
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
+
+/**
+ * Sleep helper function
+ * @param {number} ms - Milliseconds to sleep
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+/**
+ * Wait for a condition to become true
+ * @param {Function} condition - Function that returns boolean or Promise<boolean>
+ * @param {number} timeout - Timeout in milliseconds
+ * @param {number} interval - Check interval in milliseconds
+ * @param {string} errorMessage - Error message if timeout
+ * @returns {Promise<boolean>}
+ */
+async function waitForCondition(condition, timeout, interval = DELAYS.NORMAL, errorMessage = 'Timeout') {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeout) {
+    const result = await condition();
+    if (result) return true;
+    await sleep(interval);
+  }
+  throw new Error(errorMessage);
+}
+
+/**
+ * Retry an operation with exponential backoff
+ * @param {Function} operation - Async function that returns { success: boolean, ...data }
+ * @param {number} maxRetries - Maximum number of retries
+ * @param {number} delay - Delay between retries in milliseconds
+ * @param {string} operationName - Name of operation for logging
+ * @returns {Promise<{success: boolean, retryCount: number, ...data}>}
+ */
+async function retryOperation(operation, maxRetries = RETRY_LIMITS.PROMPT, delay = DELAYS.STABILIZE, operationName = 'operation') {
+  let retryCount = 0;
+  while (retryCount < maxRetries && !userStopped) {
+    try {
+      const result = await operation();
+      if (result && result.success !== false) {
+        return { ...result, retryCount, success: true };
+      }
+      retryCount++;
+      if (retryCount < maxRetries) {
+        debugLog(`🔄 Retry ${operationName} lần ${retryCount}/${maxRetries}...`);
+        await sleep(delay);
+      }
+    } catch (e) {
+      debugLog(`❌ Lỗi khi ${operationName}: ${e}`);
+      retryCount++;
+      if (retryCount < maxRetries) {
+        debugLog(`🔄 Retry ${operationName} lần ${retryCount}/${maxRetries} sau lỗi...`);
+        await sleep(delay);
+      }
+    }
+  }
+  return { success: false, retryCount };
+}
+
+/**
+ * Chờ thumbnail ảnh xuất hiện sau khi crop
+ * @param {number} timeout - Timeout in milliseconds
+ * @returns {Promise<boolean>} true nếu thumbnail xuất hiện hoặc nút "+" đã biến mất
+ */
+async function waitForThumbnailAfterCrop(timeout = TIMEOUTS.THUMBNAIL_CHECK) {
+  debugLog('⏳ Đang chờ thumbnail ảnh xuất hiện...');
+  let thumbnailVisible = false;
+  let plusButtonGone = false;
+  const maxTries = Math.floor(timeout / DELAYS.NORMAL);
+  let tries = 0;
+  
+  while (!thumbnailVisible && !plusButtonGone && tries < maxTries) {
+    thumbnailVisible = isImageThumbnailVisible();
+    plusButtonGone = !isPlusButtonStillVisible();
+    
+    // Nếu thumbnail đã xuất hiện HOẶC nút "+" đã biến mất thì OK
+    if (thumbnailVisible || plusButtonGone) break;
+    
+    await sleep(DELAYS.NORMAL);
+    tries++;
+    
+    if (tries % 4 === 0) {
+      debugLog(`  Đã chờ ${tries * 0.5}s, thumbnail: ${thumbnailVisible}, nút "+": ${!plusButtonGone ? 'còn' : 'mất'}...`);
+    }
+  }
+  
+  if (thumbnailVisible) {
+    debugLog('✅ Thumbnail ảnh đã xuất hiện (thay thế nút dấu "+")');
+  } else if (plusButtonGone) {
+    debugLog('✅ Nút dấu "+" đã biến mất, thumbnail có thể đã xuất hiện');
+  } else {
+    debugLog(`⚠️ Thumbnail ảnh chưa xuất hiện và nút "+" vẫn còn sau ${timeout/1000}s, vẫn tiếp tục...`);
+  }
+  
+  await sleep(DELAYS.STABILIZE);
+  return thumbnailVisible || plusButtonGone;
 }
 
 // ============================================
@@ -127,27 +660,105 @@ function isProgressRunning() {
   });
 }
 
+/**
+ * Kiểm tra xem tab hiện tại có phải là tab Scenebuilder không
+ * @returns {boolean} true nếu đang ở tab Scenebuilder
+ */
+function isScenebuilderTab() {
+  try {
+    // 1. Check URL có chứa labs.google
+    if (!window.location.href.includes('labs.google')) {
+      return false;
+    }
+    
+    // 2. Check có textarea prompt (điều kiện quan trọng nhất)
+    const textarea = document.querySelector('#PINHOLE_TEXT_AREA_ELEMENT_ID');
+    if (!textarea) {
+      return false; // Không có textarea thì chắc chắn không phải Scenebuilder
+    }
+    
+    // 3. Check breadcrumb có "Scenebuilder" hoặc "SceneBuilder" (optional, có thể chưa render)
+    const allElements = Array.from(document.querySelectorAll('*'));
+    const breadcrumbs = allElements.filter(el => {
+      const text = el.textContent || '';
+      return (text.includes('Scenebuilder') || text.includes('SceneBuilder')) && 
+             el.offsetParent !== null; // Chỉ lấy element visible
+    });
+    
+    // 4. Check có nút generate (icon arrow_forward) - optional
+    const hasGenerateBtn = Array.from(document.querySelectorAll('button i.google-symbols'))
+      .some(i => i.textContent.trim() === 'arrow_forward');
+    
+    // Nếu có textarea và (breadcrumb hoặc nút generate) → là Scenebuilder
+    // Nếu chỉ có textarea mà không có breadcrumb/generate → có thể là Scenebuilder đang load, vẫn return true
+    return textarea !== null;
+  } catch (e) {
+    debugLog('⚠️ isScenebuilderTab lỗi: ' + e);
+    return false;
+  }
+}
+
+/**
+ * Gửi message đến sidepanel để hiển thị/ẩn mask
+ * @param {boolean} show - true để hiển thị, false để ẩn
+ */
+function updateScenebuilderMask(show) {
+  try {
+    chrome.runtime.sendMessage({
+      type: 'SCENEBUILDER_MASK',
+      show: show
+    });
+  } catch (e) {
+    debugLog('⚠️ updateScenebuilderMask lỗi: ' + e);
+  }
+}
+
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Xử lý async messages
   if (message.type === 'START_FLOW') {
+    (async () => {
+      try {
     if (isRunning) {
       debugLog('Đã chạy rồi, bỏ qua START_FLOW');
+          sendResponse && sendResponse({ ok: false, error: 'Đã chạy rồi' });
       return;
     }
+    
+    // Kiểm tra xem có đang ở tab Scenebuilder không
+    if (!isScenebuilderTab()) {
+      debugLog('❌ Không phải tab Scenebuilder! Vui lòng mở tab Scenebuilder để sử dụng extension.');
+      updateScenebuilderMask(true);
+      sendResponse && sendResponse({ ok: false, error: 'Không phải tab Scenebuilder' });
+      return;
+    }
+    
+    // Ẩn mask nếu đang hiển thị
+    updateScenebuilderMask(false);
+    
     userStopped = false;
     clearRestartTimer();
+        await clearFlowState(); // Xóa state cũ khi bắt đầu flow mới
+        
     // Kiểm tra nếu còn video đang render thì không cho chạy flow mới
     if (isProgressRunning()) {
       debugLog('⚠️ Đang có video render, không thể chạy flow mới!');
       sendResponse && sendResponse({ ok: false, error: 'Video đang render' });
       return;
     }
+        
     prompts = message.prompts;
     currentPromptIndex = 0;
     totalPrompts = prompts.length;
     initialImageFile = message.initialImageFile || null; // Lưu ảnh bắt đầu nếu có
     isRunning = true;
+        
+        try {
     chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Running' });
+        } catch (e) {
+          console.error('Lỗi khi gửi FLOW_STATUS: ', e);
+        }
+        
     debugLog('Bắt đầu flow với ' + prompts.length + ' prompt');
     if (initialImageFile) {
       debugLog('📷 Có ảnh bắt đầu được cung cấp');
@@ -155,21 +766,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendProgressUpdate();
     runFlow();
     sendResponse && sendResponse({ ok: true });
+      } catch (e) {
+        console.error('Lỗi trong START_FLOW: ', e);
+        sendResponse && sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true; // Báo cho Chrome biết sẽ gửi response bất đồng bộ
   }
   
   if (message.type === 'STOP_FLOW') {
+    (async () => {
+      try {
     userStopped = true;
     isRunning = false;
     clearRestartTimer();
+        await clearFlowState(); // Xóa state khi user dừng flow
+        
+        try {
     chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
+        } catch (e) {
+          console.error('Lỗi khi gửi FLOW_STATUS: ', e);
+        }
+        
     debugLog('Đã dừng flow');
     sendResponse && sendResponse({ ok: true });
+      } catch (e) {
+        console.error('Lỗi trong STOP_FLOW: ', e);
+        sendResponse && sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true; // Báo cho Chrome biết sẽ gửi response bất đồng bộ
   }
   
   if (message.type === 'DEBUG_TEST') {
     debugLog('content.js đã nhận DEBUG_TEST');
     sendResponse && sendResponse({ ok: true });
+    return false; // Response đồng bộ
   }
+  
+  if (message.type === 'CHECK_SCENEBUILDER_TAB') {
+    const isScenebuilder = isScenebuilderTab();
+    updateScenebuilderMask(!isScenebuilder);
+    sendResponse && sendResponse({ ok: true, isScenebuilder });
+    return false; // Response đồng bộ
+  }
+  
+  return false; // Không xử lý message này
 });
 
 // ============================================
@@ -244,6 +886,18 @@ function hasVideoInScene() {
 // MAIN FLOW - UPDATED
 // ============================================
 async function runFlow() {
+  // Kiểm tra xem có đang ở tab Scenebuilder không
+  if (!isScenebuilderTab()) {
+    debugLog('❌ Không phải tab Scenebuilder! Dừng flow.');
+    updateScenebuilderMask(true);
+    isRunning = false;
+    chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
+    return;
+  }
+  
+  // Ẩn mask nếu đang hiển thị
+  updateScenebuilderMask(false);
+  
   // Check xem có video trong scene chưa
   const hasVideo = hasVideoInScene();
   debugLog('📸 Đang check video trong scene...');
@@ -255,7 +909,7 @@ async function runFlow() {
     let imageFlowSuccess = false;
     let imageFlowRetryCount = 0;
     
-    while (!imageFlowSuccess && imageFlowRetryCount < 5 && !userStopped) {
+    while (!imageFlowSuccess && imageFlowRetryCount < RETRY_LIMITS.IMAGE_FLOW && !userStopped) {
       try {
         if (imageFlowRetryCount === 0) {
           // Lần đầu tiên: Upload ảnh và crop
@@ -283,12 +937,12 @@ async function runFlow() {
           
           // Đóng menu frame nếu còn mở (từ lần generate trước)
           await closeMenuFrame();
-          await new Promise(r => setTimeout(r, 1000));
+          await sleep(DELAYS.LONG);
           
           // Mở image picker và chọn asset đầu tiên
           debugLog('📂 Đang mở image picker để chọn lại asset...');
           await openImagePicker();
-          await new Promise(r => setTimeout(r, 1000));
+          await sleep(DELAYS.LONG);
           
           debugLog('🎯 Đang chọn asset đầu tiên...');
           await selectLatestAsset();
@@ -299,10 +953,10 @@ async function runFlow() {
         debugLog('⏳ Kiểm tra dấu "+" đã chuyển thành thumbnail...');
         let plusButtonGone = false;
         let checkTries = 0;
-        const maxCheckTries = 20; // 20 * 500ms = 10s
+        const maxCheckTries = RETRY_LIMITS.THUMBNAIL_CHECK;
         
         while (isPlusButtonStillVisible() && checkTries < maxCheckTries) {
-          await new Promise(r => setTimeout(r, 500));
+          await sleep(DELAYS.NORMAL);
           checkTries++;
           
           // Kiểm tra lại xem thumbnail đã xuất hiện chưa
@@ -316,17 +970,21 @@ async function runFlow() {
           }
         }
         
-        if (isPlusButtonStillVisible() && !isImageThumbnailVisible()) {
+        // Kiểm tra lại một lần nữa sau khi chờ
+        const finalThumbnailVisible = isImageThumbnailVisible();
+        const finalPlusButtonVisible = isPlusButtonStillVisible();
+        
+        if (finalThumbnailVisible) {
+          // Thumbnail đã xuất hiện → OK, không cần quan tâm nút "+" nữa
+          debugLog('✅ Thumbnail đã xuất hiện, dấu "+" đã được thay thế');
+        } else if (!finalPlusButtonVisible) {
+          // Nút "+" đã biến mất → OK, có thể thumbnail đang load
+          debugLog('✅ Dấu "+" đã biến mất, thumbnail có thể đã xuất hiện');
+        } else {
           // Sau 10s mà dấu "+" vẫn còn và thumbnail chưa xuất hiện
           debugLog('⚠️ Dấu "+" chưa chuyển thành thumbnail sau 10s, tắt menu frame và retry...');
           await closeMenuFrame();
           throw 'Dấu "+" chưa chuyển thành thumbnail sau 10s';
-        }
-        
-        if (isImageThumbnailVisible()) {
-          debugLog('✅ Thumbnail đã xuất hiện, dấu "+" đã được thay thế');
-        } else if (!isPlusButtonStillVisible()) {
-          debugLog('✅ Dấu "+" đã biến mất');
         }
         
         // 4. Nhập prompt đầu tiên
@@ -342,14 +1000,71 @@ async function runFlow() {
         const prevAssetCount = getAssetCount();
         let waitTries = 0;
         let newAssetCount = getAssetCount();
+        const startTime = Date.now(); // Lưu thời gian bắt đầu
+        // Khởi tạo với giá trị hiện tại để có thể detect progress biến mất ngay từ đầu
+        let progressWasRunning = isProgressRunning();
+        let progressDisappeared = false;
+        let noProgressStartTime = null; // Thời điểm bắt đầu không có progress
         
-        while (newAssetCount <= prevAssetCount && waitTries < 180) { // 180 * 1s = 3 phút
-          await new Promise(r => setTimeout(r, 1000));
+        while (newAssetCount <= prevAssetCount && waitTries < TIMEOUTS.ASSET_WAIT / 1000) {
+          const progressRunning = isProgressRunning();
+          
+          // Phát hiện progress biến mất (từ có → không có)
+          if (progressWasRunning && !progressRunning && !progressDisappeared) {
+            debugLog('⚠️ Progress % đã biến mất, kiểm tra số lượng video ngay...');
+            // Không đợi 3s, check ngay lập tức để phát hiện lỗi nhanh hơn
+            await sleep(500); // Chỉ đợi 0.5s để DOM cập nhật
+            newAssetCount = getAssetCount();
+            
+            if (newAssetCount <= prevAssetCount) {
+              // Video render thất bại: số video không đổi sau khi progress biến mất
+              debugLog(`⚠️ Video render thất bại: số video không đổi (${prevAssetCount} → ${newAssetCount})`);
+              debugLog('🔄 Đang reload trang để retry prompt này...');
+              // KHÔNG tăng currentPromptIndex để retry lại prompt này sau khi reload
+              await saveFlowState();
+              await sleep(500);
+              location.reload();
+              return; // Dừng flow, sẽ tiếp tục sau khi reload
+            } else {
+              // Video render thành công: số video đã tăng
+              debugLog(`✅ Video render thành công sau khi progress biến mất (${prevAssetCount} → ${newAssetCount})`);
+              break; // Thoát vòng lặp
+            }
+            progressDisappeared = true;
+          }
+          
+          // Check: Nếu không có progress và số video không tăng sau 10s → reload ngay
+          if (!progressRunning) {
+            if (noProgressStartTime === null) {
+              noProgressStartTime = Date.now();
+            } else {
+              const noProgressDuration = Date.now() - noProgressStartTime;
+              // Nếu không có progress trong 10 giây và số video không tăng → reload
+              if (noProgressDuration > 10000 && newAssetCount <= prevAssetCount) {
+                debugLog(`⚠️ Không có progress trong ${Math.floor(noProgressDuration/1000)}s và số video không tăng (${prevAssetCount} → ${newAssetCount})`);
+                debugLog('🔄 Đang reload trang để retry prompt này...');
+                await saveFlowState();
+                await sleep(500);
+                location.reload();
+                return; // Dừng flow, sẽ tiếp tục sau khi reload
+              }
+            }
+          } else {
+            // Có progress → reset timer
+            noProgressStartTime = null;
+          }
+          
+          progressWasRunning = progressRunning;
+          
+          await sleep(DELAYS.LONG);
           newAssetCount = getAssetCount();
           waitTries++;
           
+          // Tính thời gian thực tế đã chờ (tính bằng giây)
+          const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+          
           if (waitTries % 20 === 0) {
-            debugLog(`  Đã chờ ${waitTries}s... (${prevAssetCount} → ${newAssetCount})`);
+            debugLog(`  Đã chờ ${elapsedSeconds}s... (${prevAssetCount} → ${newAssetCount})`);
           }
         }
         
@@ -360,23 +1075,45 @@ async function runFlow() {
           // Reset initialImageFile sau khi đã sử dụng
           initialImageFile = null;
           imageFlowSuccess = true;
-        } else {
-          debugLog('⚠️ Video chưa được tạo sau 3 phút, sẽ retry luồng chọn ảnh');
-          imageFlowRetryCount++;
           
-          if (imageFlowRetryCount < 5) {
-            debugLog(`🔄 Retry luồng chọn ảnh lần ${imageFlowRetryCount}/5...`);
-            await new Promise(r => setTimeout(r, 2000));
+          // Reload trang sau mỗi 4 prompt thành công (nếu còn prompt tiếp theo)
+          // Reload khi currentPromptIndex là 4, 8, 12... (bội số của 4)
+          if (currentPromptIndex < prompts.length && currentPromptIndex % 4 === 0) {
+            debugLog(`🔄 Đã hoàn thành ${currentPromptIndex} prompt, đang lưu state và reload trang...`);
+            await saveFlowState();
+            await sleep(500); // Đợi một chút để đảm bảo state được lưu
+            location.reload();
+            return; // Dừng flow, sẽ tiếp tục sau khi reload
           }
+        } else {
+          // Video render lỗi (timeout), reload trang ngay lập tức để retry
+          debugLog(`⚠️ Video chưa được tạo sau ${TIMEOUTS.ASSET_WAIT/60000} phút, video render có thể bị lỗi`);
+          debugLog('🔄 Đang reload trang để retry prompt này...');
+          // KHÔNG tăng currentPromptIndex để retry lại prompt này sau khi reload
+          await saveFlowState();
+          await sleep(500);
+          location.reload();
+          return; // Dừng flow, sẽ tiếp tục sau khi reload
         }
         
       } catch (e) {
-        debugLog('❌ Lỗi khi xử lý ảnh bắt đầu: ' + e);
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        
+        // Kiểm tra nếu là lỗi trang chết, reload ngay lập tức
+        if (e instanceof Error && e.isPageDead) {
+          debugLog('⚠️ Phát hiện trang bị chết trong image flow, đang reload trang ngay lập tức...');
+          await saveFlowState();
+          await sleep(500);
+          location.reload();
+          return; // Dừng flow, sẽ tiếp tục sau khi reload
+        }
+        
+        debugLog(`❌ Lỗi khi xử lý ảnh bắt đầu (retry ${imageFlowRetryCount + 1}/${RETRY_LIMITS.IMAGE_FLOW}): ${errorMsg}`);
         imageFlowRetryCount++;
         
-        if (imageFlowRetryCount < 5) {
-          debugLog(`🔄 Retry luồng chọn ảnh lần ${imageFlowRetryCount}/5 sau lỗi...`);
-          await new Promise(r => setTimeout(r, 2000));
+        if (imageFlowRetryCount < RETRY_LIMITS.IMAGE_FLOW) {
+          debugLog(`🔄 Retry luồng chọn ảnh lần ${imageFlowRetryCount}/${RETRY_LIMITS.IMAGE_FLOW} sau lỗi...`);
+          await sleep(DELAYS.STABILIZE);
         }
       }
     }
@@ -417,7 +1154,7 @@ async function runFlow() {
       let success = false;
       let retryCount = 0;
       
-      while (!success && retryCount < 5 && !userStopped) {
+      while (!success && retryCount < RETRY_LIMITS.PROMPT && !userStopped) {
         try {
           // Luôn scroll asset list đến cuối trước mỗi prompt
           await scrollAssetListToEnd();
@@ -431,15 +1168,72 @@ async function runFlow() {
           debugLog('⏳ Đang chờ asset mới xuất hiện...');
           let waitTries = 0;
           let newAssetCount = getAssetCount();
+          const startTime = Date.now(); // Lưu thời gian bắt đầu
+          // Khởi tạo với giá trị hiện tại để có thể detect progress biến mất ngay từ đầu
+          let progressWasRunning = isProgressRunning();
+          let progressDisappeared = false;
+          let noProgressStartTime = null; // Thời điểm bắt đầu không có progress
           
-          while (newAssetCount <= prevAssetCount && waitTries < 180) { // 180 * 1s = 180s = 3 phút
-            await new Promise(r => setTimeout(r, 1000));
+          while (newAssetCount <= prevAssetCount && waitTries < TIMEOUTS.ASSET_WAIT / 1000) {
+            const progressRunning = isProgressRunning();
+            
+            // Phát hiện progress biến mất (từ có → không có)
+            if (progressWasRunning && !progressRunning && !progressDisappeared) {
+              debugLog('⚠️ Progress % đã biến mất, kiểm tra số lượng video ngay...');
+              // Không đợi 3s, check ngay lập tức để phát hiện lỗi nhanh hơn
+              await sleep(500); // Chỉ đợi 0.5s để DOM cập nhật
+              newAssetCount = getAssetCount();
+              
+              if (newAssetCount <= prevAssetCount) {
+                // Video render thất bại: số video không đổi sau khi progress biến mất
+                debugLog(`⚠️ Video render thất bại: số video không đổi (${prevAssetCount} → ${newAssetCount})`);
+                debugLog('🔄 Đang reload trang để retry prompt này...');
+                // KHÔNG tăng currentPromptIndex để retry lại prompt này sau khi reload
+                await saveFlowState();
+                await sleep(500);
+                location.reload();
+                return; // Dừng flow, sẽ tiếp tục sau khi reload
+              } else {
+                // Video render thành công: số video đã tăng
+                debugLog(`✅ Video render thành công sau khi progress biến mất (${prevAssetCount} → ${newAssetCount})`);
+                break; // Thoát vòng lặp
+              }
+              progressDisappeared = true;
+            }
+            
+            // Check: Nếu không có progress và số video không tăng sau 10s → reload ngay
+            if (!progressRunning) {
+              if (noProgressStartTime === null) {
+                noProgressStartTime = Date.now();
+              } else {
+                const noProgressDuration = Date.now() - noProgressStartTime;
+                // Nếu không có progress trong 10 giây và số video không tăng → reload
+                if (noProgressDuration > 10000 && newAssetCount <= prevAssetCount) {
+                  debugLog(`⚠️ Không có progress trong ${Math.floor(noProgressDuration/1000)}s và số video không tăng (${prevAssetCount} → ${newAssetCount})`);
+                  debugLog('🔄 Đang reload trang để retry prompt này...');
+                  await saveFlowState();
+                  await sleep(500);
+                  location.reload();
+                  return; // Dừng flow, sẽ tiếp tục sau khi reload
+                }
+              }
+            } else {
+              // Có progress → reset timer
+              noProgressStartTime = null;
+            }
+            
+            progressWasRunning = progressRunning;
+            
+            await sleep(DELAYS.LONG);
             newAssetCount = getAssetCount();
             waitTries++;
             
-            // Log progress mỗi 10s
+            // Tính thời gian thực tế đã chờ (tính bằng giây)
+            const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+            
+            // Log progress mỗi 20s (mỗi 20 lần lặp)
             if (waitTries % 20 === 0) {
-              debugLog(`  Đã chờ ${waitTries / 2}s... (${prevAssetCount} → ${newAssetCount})`);
+              debugLog(`  Đã chờ ${elapsedSeconds}s... (${prevAssetCount} → ${newAssetCount})`);
             }
           }
           
@@ -448,22 +1242,44 @@ async function runFlow() {
             success = true;
             currentPromptIndex++;
             sendProgressUpdate();
-          } else {
-            debugLog('⚠️ Asset mới chưa được thêm sau 3 phút, sẽ retry prompt này.');
-            retryCount++;
             
-            if (retryCount < 5) {
-              debugLog(`🔄 Retry lần ${retryCount}/5...`);
-              await new Promise(r => setTimeout(r, 2000));
+            // Reload trang sau mỗi 4 prompt thành công (nếu còn prompt tiếp theo)
+            // Reload khi currentPromptIndex là 4, 8, 12... (bội số của 4)
+            if (currentPromptIndex < prompts.length && currentPromptIndex % 4 === 0) {
+              debugLog(`🔄 Đã hoàn thành ${currentPromptIndex} prompt, đang lưu state và reload trang...`);
+              await saveFlowState();
+              await sleep(500); // Đợi một chút để đảm bảo state được lưu
+              location.reload();
+              return; // Dừng flow, sẽ tiếp tục sau khi reload
             }
+          } else {
+            // Video render lỗi (timeout), reload trang ngay lập tức để retry
+            debugLog(`⚠️ Asset mới chưa được thêm sau ${TIMEOUTS.ASSET_WAIT/60000} phút, video render có thể bị lỗi`);
+            debugLog('🔄 Đang reload trang để retry prompt này...');
+            // KHÔNG tăng currentPromptIndex để retry lại prompt này sau khi reload
+            await saveFlowState();
+            await sleep(500);
+            location.reload();
+            return; // Dừng flow, sẽ tiếp tục sau khi reload
           }
         } catch (e) {
-          debugLog('❌ Lỗi khi chạy prompt: ' + e);
+          const errorMsg = e instanceof Error ? e.message : String(e);
+          
+          // Kiểm tra nếu là lỗi trang chết, reload ngay lập tức
+          if (e instanceof Error && e.isPageDead) {
+            debugLog('⚠️ Phát hiện trang bị chết, đang reload trang ngay lập tức...');
+            await saveFlowState();
+            await sleep(500);
+            location.reload();
+            return; // Dừng flow, sẽ tiếp tục sau khi reload
+          }
+          
+          debugLog(`❌ Lỗi khi chạy prompt #${currentPromptIndex + 1} (retry ${retryCount + 1}/${RETRY_LIMITS.PROMPT}): ${errorMsg}`);
           retryCount++;
           
-          if (retryCount < 5) {
-            debugLog(`🔄 Retry lần ${retryCount}/5 sau lỗi...`);
-            await new Promise(r => setTimeout(r, 2000));
+          if (retryCount < RETRY_LIMITS.PROMPT) {
+            debugLog(`🔄 Retry lần ${retryCount}/${RETRY_LIMITS.PROMPT} sau lỗi...`);
+            await sleep(DELAYS.STABILIZE);
           }
         }
       }
@@ -477,7 +1293,8 @@ async function runFlow() {
       }
 
     } catch (e) {
-      debugLog('❌ Lỗi không mong đợi: ' + e);
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      debugLog(`❌ Lỗi không mong đợi trong runFlow: ${errorMsg}`);
       isRunning = false;
       scheduleAutoRestart('exception');
       return;
@@ -486,6 +1303,7 @@ async function runFlow() {
 
   debugLog('🎉 Kết thúc flow.');
   isRunning = false;
+  await clearFlowState(); // Xóa state đã lưu
   chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Idle' });
 }
 
@@ -496,7 +1314,7 @@ async function runFlow() {
 /**
  * Chờ element xuất hiện trong DOM (kể cả thay đổi attributes hiển thị)
  */
-function waitForElement(selector, timeout = 10000, { visible = false } = {}) {
+function waitForElement(selector, timeout = TIMEOUTS.ELEMENT_WAIT, { visible = false } = {}) {
   return new Promise((resolve, reject) => {
     const pick = () => {
       const el = document.querySelector(selector);
@@ -534,8 +1352,16 @@ function waitForElement(selector, timeout = 10000, { visible = false } = {}) {
  * - Inject script vào main world để có quyền tương tác với slider
  * - Kéo slider đến 100% bằng pointer events
  * - Click nút save frame
+ * @returns {Promise<void>}
+ * @throws {Error} Nếu không tìm thấy slider hoặc nút save frame
  */
 async function saveFrameAsAsset() {
+  // Kiểm tra tab Scenebuilder
+  if (!isScenebuilderTab()) {
+    updateScenebuilderMask(true);
+    throw 'Không phải tab Scenebuilder';
+  }
+  
   debugLog('📍 saveFrameAsAsset: Bắt đầu...');
   
   try {
@@ -559,7 +1385,7 @@ async function saveFrameAsAsset() {
       debugLog('✓ Đã inject script main world.');
       
       // Chờ script được execute
-      await new Promise(r => setTimeout(r, 200));
+      await sleep(DELAYS.SHORT * 2);
     }
 
     // Gửi message yêu cầu kéo slider
@@ -582,15 +1408,24 @@ async function saveFrameAsAsset() {
         if (resolved) return;
         resolved = true;
         window.removeEventListener('message', handler);
-        debugLog('⏱️ Timeout - không nhận được response sau 5s');
-        reject('Timeout kéo slider (5s)');
-      }, 5000);
+        debugLog(`⏱️ Timeout - không nhận được response sau ${TIMEOUTS.SLIDER_DRAG/1000}s`);
+        reject(`Timeout kéo slider (${TIMEOUTS.SLIDER_DRAG/1000}s)`);
+      }, TIMEOUTS.SLIDER_DRAG);
     });
     if (!result.ok) {
-      throw 'Không kéo được slider đến cuối: ' + (result.error || 'unknown');
+      const errorMsg = result.error || 'unknown';
+      // Nếu error là null hoặc 'unknown', có thể trang bị chết, cần reload
+      if (!result.error || result.error === 'unknown' || result.error === null) {
+        debugLog('⚠️ Phát hiện trang có thể bị chết (ok=false, error=null/unknown), sẽ reload trang...');
+        // Throw error đặc biệt để code trên có thể catch và reload
+        const reloadError = new Error('PAGE_DEAD_NEED_RELOAD');
+        reloadError.isPageDead = true;
+        throw reloadError;
+      }
+      throw 'Không kéo được slider đến cuối: ' + errorMsg;
     }
     debugLog('✓ Đã kéo slider đến cuối');
-    await new Promise(r => setTimeout(r, 1000));
+    await sleep(DELAYS.LONG);
 
     // Tìm và click nút save frame (icon "add")
     debugLog('🔍 Tìm nút save frame...');
@@ -608,15 +1443,20 @@ async function saveFrameAsAsset() {
     btn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
     btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     // Chờ menu xuất hiện
-    await new Promise(r => setTimeout(r, 1000));
+    await sleep(DELAYS.LONG);
     // Tìm menu item "Save frame as asset"
     debugLog('🔍 Tìm menu item Save frame...');
     const menuItems = document.querySelectorAll('[role="menuitem"]');
     debugLog(`Tìm thấy ${menuItems.length} menu items`);
-    const saveMenuItem = Array.from(menuItems).find(item => {
-      const text = item.textContent.toLowerCase();
-      return text.includes('save') && text.includes('frame');
-    });
+    
+    // Thử tìm bằng aria-label trước (không phụ thuộc ngôn ngữ)
+    let saveMenuItem = findButtonByAttributes(Array.from(menuItems), ['save', 'frame'], null);
+    
+    // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
+    if (!saveMenuItem) {
+      saveMenuItem = findButtonByText(Array.from(menuItems), 'SAVE_FRAME', { requireAll: true });
+    }
+    
     if (!saveMenuItem) {
       debugLog('❌ Không tìm thấy menu item Save frame');
       debugLog('Menu items có: ' + Array.from(menuItems).map(m => m.textContent).join(', '));
@@ -627,7 +1467,7 @@ async function saveFrameAsAsset() {
     saveMenuItem.click();
     debugLog('✓ Đã click Save frame as asset.');
     // Chờ asset được lưu
-    await new Promise(r => setTimeout(r, 1000));
+    await sleep(DELAYS.LONG);
   } catch (e) {
     debugLog('❌ saveFrameAsAsset: Lỗi ' + e);
     throw e;
@@ -637,30 +1477,45 @@ async function saveFrameAsAsset() {
 
 /**
  * STEP 3: Mở asset picker (có thể bỏ qua nếu tự hiện)
+ * @returns {Promise<void>}
  */
 async function openImagePicker() {
+  // Kiểm tra tab Scenebuilder
+  if (!isScenebuilderTab()) {
+    updateScenebuilderMask(true);
+    throw 'Không phải tab Scenebuilder';
+  }
+  
   debugLog('🖼️ openImagePicker: Chờ asset picker hiện...');
   // Asset picker thường tự hiện sau khi save frame
-  await new Promise(r => setTimeout(r, 1000));
+  await sleep(DELAYS.LONG);
 }
 
 /**
  * Upload ảnh từ base64 string
  * @param {string} imageBase64 - Base64 data URL của ảnh
+ * @returns {Promise<void>}
+ * @throws {Error} Nếu không tìm thấy textarea hoặc nút upload
  */
 async function uploadImageFromFile(imageBase64) {
+  // Kiểm tra tab Scenebuilder
+  if (!isScenebuilderTab()) {
+    updateScenebuilderMask(true);
+    throw 'Không phải tab Scenebuilder';
+  }
+  
   debugLog('📤 Đang upload ảnh...');
   
   try {
     // Tìm nút + đầu tiên ở dưới prompt (button với icon "add" hoặc "image")
     // Tìm trong khu vực prompt textarea
-    const textarea = document.querySelector('#PINHOLE_TEXT_AREA_ELEMENT_ID');
+    const textarea = getTextarea();
     if (!textarea) {
       throw 'Không tìm thấy prompt textarea';
     }
     
     // Tìm button gần textarea (có thể là button với icon "add" hoặc "image")
-    const promptArea = textarea.closest('div') || textarea.parentElement;
+    const promptArea = getPromptArea();
     const addButtons = Array.from(promptArea.querySelectorAll('button')).filter(btn => {
       const icon = btn.querySelector('i.google-symbols');
       if (icon) {
@@ -691,27 +1546,32 @@ async function uploadImageFromFile(imageBase64) {
       debugLog('✓ Tìm thấy input file trực tiếp, đang trigger...');
       // Trigger click vào input file để mở file picker
       fileInput.click();
-      await new Promise(r => setTimeout(r, 500));
+      await sleep(DELAYS.NORMAL);
     } else {
       // Nếu không tìm thấy, click nút + để mở menu
       debugLog('⚠️ Không tìm thấy input file trực tiếp, click nút + để mở menu...');
       addButton.click();
-      await new Promise(r => setTimeout(r, 1000));
+      await sleep(DELAYS.LONG);
       
       // Tìm input file sau khi menu mở
       fileInput = document.querySelector('input[type="file"]');
       
       if (!fileInput) {
-        // Tìm button "Upload" trong menu và click để trigger input
-        const uploadButtons = Array.from(document.querySelectorAll('button, [role="menuitem"]')).filter(btn => {
-          const text = btn.textContent.trim().toLowerCase();
-          return text.includes('upload') || text.includes('chọn') || text.includes('browse');
-        });
+        // Tìm button "Upload" trong menu - ưu tiên aria-label, sau đó text matching đa ngôn ngữ
+        const allMenuButtons = Array.from(document.querySelectorAll('button, [role="menuitem"]'));
         
-        if (uploadButtons.length > 0) {
+        // Thử tìm bằng aria-label trước
+        let uploadButton = findButtonByAttributes(allMenuButtons, ['upload', 'browse'], null);
+        
+        // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
+        if (!uploadButton) {
+          uploadButton = findButtonByText(allMenuButtons, 'UPLOAD');
+        }
+        
+        if (uploadButton) {
           debugLog('✓ Tìm thấy button upload, đang click...');
-          uploadButtons[0].click();
-          await new Promise(r => setTimeout(r, 500));
+          uploadButton.click();
+          await sleep(DELAYS.NORMAL);
           // Tìm lại input file sau khi click upload
           fileInput = document.querySelector('input[type="file"]');
         }
@@ -749,7 +1609,7 @@ async function uploadImageFromFile(imageBase64) {
     fileInput.dispatchEvent(changeEvent);
     
     debugLog('✓ Đã set file vào input và trigger change event');
-    await new Promise(r => setTimeout(r, 1000));
+    await sleep(DELAYS.LONG);
     
     // Chờ popup preview xuất hiện
     debugLog('⏳ Đang chờ popup preview xuất hiện...');
@@ -771,66 +1631,63 @@ async function handleImagePreviewAndCrop() {
     // Chờ popup preview xuất hiện (có thể là dialog/modal)
     let cropAndSaveButton = null;
     let tries = 0;
-    const maxTries = 50; // 1s
+    const maxTries = RETRY_LIMITS.CROP_SAVE_BUTTON;
     
     while (!cropAndSaveButton && tries < maxTries) {
-      // Tìm nút "Crop and Save"
-      const buttons = Array.from(document.querySelectorAll('button')).filter(btn => {
-        const text = btn.textContent.trim();
-        return text.includes('Crop and Save') || text.includes('Crop and save') || 
-               (text.includes('Crop') && text.includes('Save'));
-      });
+      // Tìm nút "Crop and Save" - ưu tiên aria-label, sau đó text matching đa ngôn ngữ
+      const allButtons = Array.from(document.querySelectorAll('button'));
       
-      if (buttons.length > 0) {
-        cropAndSaveButton = buttons[0];
+      // Thử tìm bằng aria-label trước (không phụ thuộc ngôn ngữ)
+      cropAndSaveButton = findButtonByAttributes(allButtons, ['crop', 'save'], null);
+      
+      // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
+      if (!cropAndSaveButton) {
+        cropAndSaveButton = findButtonByText(allButtons, 'CROP_AND_SAVE', { requireAll: true });
+      }
+      
+      if (cropAndSaveButton) {
         break;
       }
       
-      await new Promise(r => setTimeout(r, 200));
+      await sleep(DELAYS.SHORT * 2);
       tries++;
     }
     
     if (!cropAndSaveButton) {
-      debugLog('⚠️ Không tìm thấy nút "Crop and Save", thử tìm nút crop khác...');
-      // Fallback: tìm nút có text chứa "crop" và "save"
-      const fallbackButtons = Array.from(document.querySelectorAll('button')).filter(btn => {
-        const text = btn.textContent.trim().toLowerCase();
-        return (text.includes('crop') && text.includes('save')) || 
-               text.includes('crop and save');
-      });
-      
-      if (fallbackButtons.length > 0) {
-        cropAndSaveButton = fallbackButtons[0];
-      } else {
-        throw 'Không tìm thấy nút "Crop and Save"';
-      }
+      throw 'Không tìm thấy nút "Crop and Save"';
     }
     
     debugLog('✓ Tìm thấy nút "Crop and Save", đang click...');
     cropAndSaveButton.click();
-    await new Promise(r => setTimeout(r, 1000));
+    await sleep(DELAYS.LONG);
     
     // Chờ dialog "Notice" xuất hiện và click "I agree"
     debugLog('⏳ Đang chờ dialog Notice xuất hiện...');
     let agreeButton = null;
     tries = 0;
-    const maxNoticeTries = 20; // 10s
+    const maxNoticeTries = RETRY_LIMITS.NOTICE_DIALOG;
     
     while (!agreeButton && tries < maxNoticeTries) {
       // Tìm dialog "Notice" và nút "I agree"
       const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"]');
       for (const dialog of dialogs) {
         const dialogText = dialog.textContent || '';
-        // Check xem có phải dialog Notice không (có text "Notice" hoặc "necessary rights")
-        if (dialogText.includes('Notice') || dialogText.includes('necessary rights') || dialogText.includes('Prohibited Use Policy')) {
-          // Tìm nút "I agree" trong dialog này
-          const buttons = Array.from(dialog.querySelectorAll('button')).filter(btn => {
-            const text = btn.textContent.trim();
-            return text === 'I agree' || text.includes('I agree') || text.includes('agree');
-          });
+        // Check xem có phải dialog Notice không - dùng text matching đa ngôn ngữ
+        const isNoticeDialog = matchesText(dialogText, 'NOTICE');
+        
+        if (isNoticeDialog) {
+          // Tìm nút "I agree" - ưu tiên aria-label, sau đó text matching
+          const buttons = Array.from(dialog.querySelectorAll('button'));
           
-          if (buttons.length > 0) {
-            agreeButton = buttons[0];
+          // Thử tìm bằng aria-label trước
+          agreeButton = findButtonByAttributes(buttons, ['agree', 'accept'], null);
+          
+          // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
+          if (!agreeButton) {
+            agreeButton = findButtonByText(buttons, 'I_AGREE');
+          }
+          
+          if (agreeButton) {
             break;
           }
         }
@@ -840,7 +1697,7 @@ async function handleImagePreviewAndCrop() {
         break;
       }
       
-      await new Promise(r => setTimeout(r, 500));
+      await sleep(DELAYS.NORMAL);
       tries++;
     }
     
@@ -848,33 +1705,11 @@ async function handleImagePreviewAndCrop() {
       // Có dialog Notice
       debugLog('✓ Tìm thấy nút "I agree", đang click...');
       agreeButton.click();
-      await new Promise(r => setTimeout(r, 1000));
+      await sleep(DELAYS.LONG);
       debugLog('✅ Đã click "I agree"');
       
       // Chờ thumbnail ảnh xuất hiện (thay thế nút dấu "+")
-      debugLog('⏳ Đang chờ thumbnail ảnh xuất hiện...');
-      let thumbnailVisible = false;
-      tries = 0;
-      const maxThumbnailTries = 20; // 20 * 500ms = 10s
-      
-      while (!thumbnailVisible && tries < maxThumbnailTries) {
-        thumbnailVisible = isImageThumbnailVisible();
-        if (thumbnailVisible) {
-          break;
-        }
-        await new Promise(r => setTimeout(r, 500));
-        tries++;
-      }
-      
-      if (thumbnailVisible) {
-        debugLog('✅ Thumbnail ảnh đã xuất hiện (thay thế nút dấu "+")');
-      } else {
-        debugLog('⚠️ Thumbnail ảnh chưa xuất hiện sau 10s, vẫn tiếp tục...');
-      }
-      
-      // Chờ tiếp 2 giây để đảm bảo UI ổn định
-      debugLog('⏳ Chờ thêm 2 giây...');
-      await new Promise(r => setTimeout(r, 2000));
+      await waitForThumbnailAfterCrop(TIMEOUTS.THUMBNAIL_CHECK);
       
       debugLog('✅ Đã hoàn thành crop và chờ thumbnail ảnh');
       return true; // Có dialog
@@ -885,7 +1720,7 @@ async function handleImagePreviewAndCrop() {
       // Chờ menu frame (popup preview) tắt
       let menuFrameVisible = true;
       tries = 0;
-      const maxMenuTries = 30; // 15s
+      const maxMenuTries = RETRY_LIMITS.MENU_FRAME;
       
       while (menuFrameVisible && tries < maxMenuTries) {
         // Check xem popup preview/dialog còn visible không
@@ -896,10 +1731,12 @@ async function handleImagePreviewAndCrop() {
         });
         
         // Check xem có button "Crop and Save" còn visible không
-        const cropButtons = Array.from(document.querySelectorAll('button')).filter(btn => {
-          const text = btn.textContent.trim();
-          return (text.includes('Crop and Save') || text.includes('Crop and save')) && 
-                 btn.offsetParent !== null;
+        const allVisibleButtons = Array.from(document.querySelectorAll('button')).filter(btn => 
+          btn.offsetParent !== null
+        );
+        const cropButtons = allVisibleButtons.filter(btn => {
+          // Dùng text matching đa ngôn ngữ
+          return findButtonByText([btn], 'CROP_AND_SAVE', { requireAll: true }) !== null;
         });
         
         menuFrameVisible = hasVisibleDialog || cropButtons.length > 0;
@@ -908,35 +1745,14 @@ async function handleImagePreviewAndCrop() {
           break;
         }
         
-        await new Promise(r => setTimeout(r, 500));
+        await sleep(DELAYS.NORMAL);
         tries++;
       }
       
       if (!menuFrameVisible) {
         debugLog('✅ Menu frame đã tắt');
         //Chờ thumbnail ảnh xuất hiện (thay thế nút dấu "+")
-        debugLog('⏳ Đang chờ thumbnail ảnh xuất hiện...');
-        let thumbnailVisible = false;
-        tries = 0;
-        const maxThumbnailTries = 40; // 40 * 500ms = 20s
-        
-        while (!thumbnailVisible && tries < maxThumbnailTries) {
-          thumbnailVisible = isImageThumbnailVisible();
-          if (thumbnailVisible) {
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-          tries++;
-        }
-        
-        if (thumbnailVisible) {
-          debugLog('✅ Thumbnail ảnh đã xuất hiện (đã thay thế nút dấu "+")');
-        } else {
-          debugLog('⚠️ Thumbnail ảnh chưa xuất hiện sau 20s, vẫn tiếp tục...');
-        }
-        // Chờ tiếp 2 giây để đảm bảo UI ổn định
-        debugLog('⏳ Chờ thêm 2 giây...');
-        await new Promise(r => setTimeout(r, 2000));
+        await waitForThumbnailAfterCrop(TIMEOUTS.UPLOAD_ICON);
       } else {
         debugLog('⚠️ Menu frame có thể chưa tắt hoàn toàn, vẫn tiếp tục...');
       }
@@ -954,25 +1770,36 @@ async function handleImagePreviewAndCrop() {
  * Check và chọn mode "Frame to Video" nếu chưa chọn
  */
 async function ensureFrameToVideoMode() {
+  // Kiểm tra tab Scenebuilder
+  if (!isScenebuilderTab()) {
+    updateScenebuilderMask(true);
+    throw 'Không phải tab Scenebuilder';
+  }
+  
   debugLog('🔄 Đang check mode Frame to Video...');
   
   try {
-    // Tìm button "Text to Video" (combobox)
-    const modeButtons = Array.from(document.querySelectorAll('button[role="combobox"]')).filter(btn => {
-      const text = btn.textContent.trim();
-      return text.includes('Text to Video') || text.includes('Frame to Video') || text.includes('Frames to Video');
-    });
+    // Tìm button mode selector (combobox) - ưu tiên aria-label, sau đó text matching
+    const allModeButtons = Array.from(document.querySelectorAll('button[role="combobox"]'));
     
-    if (modeButtons.length === 0) {
+    // Thử tìm bằng aria-label trước
+    let modeButton = findButtonByAttributes(allModeButtons, ['video', 'frame'], null);
+    
+    // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
+    if (!modeButton) {
+      modeButton = findButtonByText(allModeButtons, 'FRAME_TO_VIDEO') || 
+                   findButtonByText(allModeButtons, 'TEXT_TO_VIDEO');
+    }
+    
+    if (!modeButton) {
       debugLog('⚠️ Không tìm thấy button chọn mode');
       return; // Có thể đã ở đúng mode hoặc UI khác
     }
     
-    const modeButton = modeButtons[0];
     const currentMode = modeButton.textContent.trim();
     
-    // Check xem có phải "Frame to Video" không
-    if (currentMode.includes('Frame to Video') || currentMode.includes('Frames to Video')) {
+    // Check xem có phải "Frame to Video" không - dùng text matching đa ngôn ngữ
+    if (matchesText(currentMode, 'FRAME_TO_VIDEO')) {
       debugLog('✅ Đã ở mode Frame to Video');
       return;
     }
@@ -980,19 +1807,24 @@ async function ensureFrameToVideoMode() {
     // Click để mở dropdown
     debugLog('🔄 Đang click để mở dropdown mode...');
     modeButton.click();
-    await new Promise(r => setTimeout(r, 500));
+    await sleep(DELAYS.NORMAL);
     
-    // Tìm menu item "Frame to Video" hoặc "Frames to Video"
+    // Tìm menu item "Frame to Video" - ưu tiên aria-label, sau đó text matching
     const menuItems = document.querySelectorAll('[role="menuitem"], [role="option"]');
-    const frameToVideoItem = Array.from(menuItems).find(item => {
-      const text = item.textContent.trim();
-      return text.includes('Frame to Video') || text.includes('Frames to Video');
-    });
+    const menuItemsArray = Array.from(menuItems);
+    
+    // Thử tìm bằng aria-label trước
+    let frameToVideoItem = findButtonByAttributes(menuItemsArray, ['frame', 'video'], null);
+    
+    // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
+    if (!frameToVideoItem) {
+      frameToVideoItem = findButtonByText(menuItemsArray, 'FRAME_TO_VIDEO');
+    }
     
     if (frameToVideoItem) {
       debugLog('✓ Tìm thấy menu item Frame to Video, đang click...');
       frameToVideoItem.click();
-      await new Promise(r => setTimeout(r, 1000));
+      await sleep(DELAYS.LONG);
       debugLog('✅ Đã chọn mode Frame to Video');
     } else {
       debugLog('⚠️ Không tìm thấy menu item Frame to Video, có thể đã ở đúng mode');
@@ -1005,16 +1837,25 @@ async function ensureFrameToVideoMode() {
 }
 
 /**
- * Kiểm tra nút dấu "+" còn hiện không (tức là thumbnail chưa xuất hiện)
+ * Kiểm tra nút dấu "+" bên trái (gần textarea) còn hiện không (tức là thumbnail chưa xuất hiện)
+ * Phân biệt với nút "+" bên phải (nút khác, không liên quan)
+ * @returns {boolean}
  */
 function isPlusButtonStillVisible() {
   try {
-    const textarea = document.querySelector('#PINHOLE_TEXT_AREA_ELEMENT_ID');
+    const textarea = getTextarea();
     if (!textarea) return false;
     
-    // Tìm button gần textarea có icon "add" và visible
-    const promptArea = textarea.closest('div') || textarea.parentElement;
-    const addButtons = Array.from(promptArea.querySelectorAll('button')).filter(btn => {
+    const promptArea = getPromptArea();
+    if (!promptArea) return false;
+    
+    // Lấy vị trí của textarea để so sánh
+    const textareaRect = textarea.getBoundingClientRect();
+    const textareaLeft = textareaRect.left;
+    const textareaTop = textareaRect.top;
+    
+    // Tìm tất cả button có icon "add" và visible
+    const allAddButtons = Array.from(promptArea.querySelectorAll('button')).filter(btn => {
       // Check button phải visible
       if (btn.offsetParent === null) return false;
       
@@ -1026,7 +1867,45 @@ function isPlusButtonStillVisible() {
       return false;
     });
     
-    return addButtons.length > 0;
+    if (allAddButtons.length === 0) return false;
+    
+    // Tìm nút "+" ở bên trái textarea (gần textarea nhất về phía trái)
+    // Nút "+" bên trái sẽ có vị trí left < textarea.left và gần textarea nhất
+    let leftMostButton = null;
+    let minDistance = Infinity;
+    
+    for (const btn of allAddButtons) {
+      const btnRect = btn.getBoundingClientRect();
+      const btnLeft = btnRect.left;
+      const btnRight = btnRect.right;
+      const btnTop = btnRect.top;
+      
+      // Nút "+" bên trái sẽ ở bên trái textarea (btnRight < textareaLeft hoặc gần textareaLeft)
+      // Và ở cùng hàng hoặc gần hàng với textarea
+      const horizontalDistance = Math.abs(btnLeft - textareaLeft);
+      const verticalDistance = Math.abs(btnTop - textareaTop);
+      const totalDistance = horizontalDistance + verticalDistance * 0.5; // Ưu tiên khoảng cách ngang
+      
+      // Nút bên trái: btnRight <= textareaLeft + 50 (cho phép một chút lệch)
+      if (btnRight <= textareaLeft + 50 && totalDistance < minDistance) {
+        minDistance = totalDistance;
+        leftMostButton = btn;
+      }
+    }
+    
+    // Nếu không tìm thấy nút bên trái, có thể nút "+" đã chuyển thành thumbnail
+    // Hoặc nếu chỉ có 1 nút và nó ở gần textarea (có thể là nút bên trái)
+    if (!leftMostButton && allAddButtons.length === 1) {
+      const btn = allAddButtons[0];
+      const btnRect = btn.getBoundingClientRect();
+      // Nếu nút này ở gần textarea (trong vòng 100px) thì coi như là nút bên trái
+      const distance = Math.abs(btnRect.left - textareaLeft) + Math.abs(btnRect.top - textareaTop);
+      if (distance < 100) {
+        leftMostButton = btn;
+      }
+    }
+    
+    return leftMostButton !== null;
   } catch (e) {
     return false;
   }
@@ -1044,22 +1923,34 @@ async function closeMenuFrame() {
     for (const dialog of dialogs) {
       const style = window.getComputedStyle(dialog);
       if (style.display !== 'none' && dialog.offsetParent !== null) {
-        // Tìm nút đóng (X) hoặc Cancel
-        const closeButtons = Array.from(dialog.querySelectorAll('button')).filter(btn => {
-          const text = btn.textContent.trim().toLowerCase();
-          const icon = btn.querySelector('i.google-symbols');
-          const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
-          
-          return text === 'cancel' || text === 'close' || 
-                 iconText === 'close' || iconText === 'cancel' ||
-                 btn.getAttribute('aria-label')?.toLowerCase().includes('close') ||
-                 btn.getAttribute('aria-label')?.toLowerCase().includes('cancel');
-        });
+        // Tìm nút đóng (X) hoặc Cancel - ưu tiên aria-label và icon, sau đó text matching
+        const dialogButtons = Array.from(dialog.querySelectorAll('button'));
         
-        if (closeButtons.length > 0) {
+        // Thử tìm bằng aria-label trước
+        let closeButton = findButtonByAttributes(dialogButtons, ['close', 'cancel'], null);
+        
+        // Thử tìm bằng icon (không phụ thuộc ngôn ngữ)
+        if (!closeButton) {
+          closeButton = dialogButtons.find(btn => {
+            const icon = btn.querySelector('i.google-symbols');
+            if (icon) {
+              const iconText = icon.textContent.trim().toLowerCase();
+              return iconText === 'close' || iconText === 'cancel';
+            }
+            return false;
+          });
+        }
+        
+        // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
+        if (!closeButton) {
+          closeButton = findButtonByText(dialogButtons, 'CLOSE') || 
+                       findButtonByText(dialogButtons, 'CANCEL');
+        }
+        
+        if (closeButton) {
           debugLog('✓ Tìm thấy nút đóng, đang click...');
-          closeButtons[0].click();
-          await new Promise(r => setTimeout(r, 1000));
+          closeButton.click();
+          await sleep(DELAYS.LONG);
           return;
         }
         
@@ -1067,7 +1958,7 @@ async function closeMenuFrame() {
         debugLog('⚠️ Không tìm thấy nút đóng, thử nhấn ESC...');
         const escEvent = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true });
         dialog.dispatchEvent(escEvent);
-        await new Promise(r => setTimeout(r, 1000));
+        await sleep(DELAYS.LONG);
       }
     }
     
@@ -1078,43 +1969,66 @@ async function closeMenuFrame() {
 }
 
 /**
- * Kiểm tra thumbnail ảnh đã xuất hiện thay thế nút dấu "+" chưa
- * Thumbnail là element có hình ảnh (background-image hoặc img) nằm gần textarea prompt
+ * Kiểm tra thumbnail ảnh đã xuất hiện thay thế nút dấu "+" bên trái chưa
+ * Thumbnail là element có hình ảnh (background-image hoặc img) nằm ở vị trí bên trái textarea
+ * Phân biệt với các hình ảnh khác (như nút "+" bên phải)
  */
 function isImageThumbnailVisible() {
   try {
-    const textarea = document.querySelector('#PINHOLE_TEXT_AREA_ELEMENT_ID');
+    const textarea = getTextarea();
     if (!textarea) return false;
     
+    const promptArea = getPromptArea();
+    if (!promptArea) return false;
+    
+    // Lấy vị trí của textarea để so sánh
+    const textareaRect = textarea.getBoundingClientRect();
+    const textareaLeft = textareaRect.left;
+    const textareaTop = textareaRect.top;
+    
     // Tìm trong khu vực gần textarea prompt
-    const promptArea = textarea.closest('div') || textarea.parentElement;
     const parentContainer = promptArea.parentElement || promptArea;
     
-    // Tìm tất cả elements trong container
-    const allElements = Array.from(parentContainer.querySelectorAll('*'));
-    
-    // Kiểm tra các element có thể là thumbnail ảnh
-    for (const el of allElements) {
-      // Phải visible
-      if (el.offsetParent === null) continue;
+    // Check 1: img elements - chỉ lấy thumbnail ở bên trái textarea
+    const images = parentContainer.querySelectorAll('img');
+    for (const img of images) {
+      if (img.offsetParent === null) continue;
+      if (!img.src || img.src === '' || img.src.includes('data:image/svg')) continue;
       
-      // Check 1: img element
-      if (el.tagName === 'IMG' && el.src && el.src !== '') {
-        // Kiểm tra kích thước hợp lý cho thumbnail (không quá lớn)
-        const rect = el.getBoundingClientRect();
-        if (rect.width > 0 && rect.width < 200 && rect.height > 0 && rect.height < 200) {
-          return true;
+      const rect = img.getBoundingClientRect();
+      if (rect.width > 0 && rect.width < 200 && rect.height > 0 && rect.height < 200) {
+        // Kiểm tra xem img có ở bên trái textarea không (vị trí thumbnail)
+        const imgRight = rect.right;
+        const imgTop = rect.top;
+        // Thumbnail sẽ ở bên trái textarea (imgRight <= textareaLeft + 50) và cùng hàng/gần hàng
+        const horizontalDistance = Math.abs(imgRight - textareaLeft);
+        const verticalDistance = Math.abs(imgTop - textareaTop);
+        
+        if (imgRight <= textareaLeft + 50 && verticalDistance < 100) {
+        return true;
         }
       }
+    }
+    
+    // Check 2: div có background-image - chỉ lấy thumbnail ở bên trái textarea
+    const divs = parentContainer.querySelectorAll('div');
+    for (const div of Array.from(divs).slice(0, 100)) { // Tăng số lượng check để tìm chính xác hơn
+      if (div.offsetParent === null) continue;
       
-      // Check 2: div có background-image
-      const style = window.getComputedStyle(el);
+      const style = window.getComputedStyle(div);
       if (style.backgroundImage && style.backgroundImage !== 'none' && style.backgroundImage.includes('url(')) {
-        // Kiểm tra kích thước hợp lý cho thumbnail
-        const rect = el.getBoundingClientRect();
+        const rect = div.getBoundingClientRect();
         if (rect.width > 0 && rect.width < 200 && rect.height > 0 && rect.height < 200) {
-          // Kiểm tra element này nằm gần textarea (trong cùng container hoặc gần đó)
+          // Kiểm tra xem div có ở bên trái textarea không (vị trí thumbnail)
+          const divRight = rect.right;
+          const divTop = rect.top;
+          // Thumbnail sẽ ở bên trái textarea (divRight <= textareaLeft + 50) và cùng hàng/gần hàng
+          const horizontalDistance = Math.abs(divRight - textareaLeft);
+          const verticalDistance = Math.abs(divTop - textareaTop);
+          
+          if (divRight <= textareaLeft + 50 && verticalDistance < 100) {
           return true;
+          }
         }
       }
     }
@@ -1131,20 +2045,28 @@ function isUploadIconVisible() {
 /**
  * STEP 4: Chọn asset mới nhất (data-index="1")
  * Asset list sorted newest -> oldest
+ * @returns {Promise<void>}
+ * @throws {Error} Nếu không tìm thấy asset list hoặc asset mới nhất
  */
 async function selectLatestAsset() {
+  // Kiểm tra tab Scenebuilder
+  if (!isScenebuilderTab()) {
+    updateScenebuilderMask(true);
+    throw 'Không phải tab Scenebuilder';
+  }
+  
   debugLog('🎨 selectLatestAsset: Chọn asset mới nhất...');
   
   try {
     // Chờ asset list hiện
-    const assetList = await waitForElement('.virtuoso-grid-list', 8000);
+    const assetList = await waitForElement('.virtuoso-grid-list', TIMEOUTS.ELEMENT_WAIT - 2000);
 
     // Chờ icon upload xuất hiện (i.google-symbols có textContent 'upload')
     let tries = 0;
-    const maxTries = 40; // 10s
+    const maxTries = RETRY_LIMITS.UPLOAD_ICON;
     
     while (!isUploadIconVisible() && tries < maxTries) {
-      await new Promise(r => setTimeout(r, 500));
+      await sleep(DELAYS.NORMAL);
       tries++;
     }
     if (!isUploadIconVisible()) {
@@ -1154,7 +2076,7 @@ async function selectLatestAsset() {
     }
     // Chờ 2s để đảm bảo asset mới đã render hoàn toàn
     debugLog('⏳ Đã tìm thấy asset mới nhất, chờ 2s để ổn định...');
-    await new Promise(r => setTimeout(r, 2000));
+    await sleep(DELAYS.STABILIZE);
     // Chọn asset đầu tiên sau nút upload (data-index="1")
     const assetBtn = document.querySelector('[data-index="1"] button');
     if (!assetBtn) throw 'Không tìm thấy asset mới nhất';
@@ -1162,7 +2084,7 @@ async function selectLatestAsset() {
     assetBtn.click();
     debugLog('✓ Đã chọn asset mới nhất.');
 
-    await new Promise(r => setTimeout(r, 500));
+    await sleep(DELAYS.NORMAL);
 
   } catch (e) {
     debugLog('❌ selectLatestAsset: Lỗi ' + e);
@@ -1172,26 +2094,38 @@ async function selectLatestAsset() {
 
 /**
  * STEP 5: Nhập prompt vào textarea
+ * @param {string} prompt - Prompt text để nhập
+ * @returns {Promise<void>}
+ * @throws {Error} Nếu không tìm thấy textarea
  */
 async function inputPrompt(prompt) {
+  // Kiểm tra tab Scenebuilder
+  if (!isScenebuilderTab()) {
+    updateScenebuilderMask(true);
+    throw 'Không phải tab Scenebuilder';
+  }
+  
   debugLog('⌨️ inputPrompt: Nhập prompt...');
   
   try {
-    const textarea = await waitForElement('#PINHOLE_TEXT_AREA_ELEMENT_ID', 6000);
+    const textarea = await waitForElement('#PINHOLE_TEXT_AREA_ELEMENT_ID', TIMEOUTS.ELEMENT_WAIT - 4000);
+    // Update cache
+    cachedTextarea = textarea;
+    cachedPromptArea = textarea ? (textarea.closest('div') || textarea.parentElement) : null;
     
     // Focus và clear
     textarea.focus();
     textarea.value = '';
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
     
-    await new Promise(r => setTimeout(r, 100));
+    await sleep(DELAYS.SHORT);
     
     // Nhập prompt mới
     textarea.value = prompt;
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
     
     debugLog('✓ Đã nhập prompt.');
-    await new Promise(r => setTimeout(r, 300));
+    await sleep(DELAYS.MEDIUM);
     
   } catch (e) {
     debugLog('❌ inputPrompt: Lỗi ' + e);
@@ -1201,8 +2135,16 @@ async function inputPrompt(prompt) {
 
 /**
  * STEP 6: Click nút Generate
+ * @returns {Promise<void>}
+ * @throws {Error} Nếu không tìm thấy nút generate
  */
 async function clickGenerate() {
+  // Kiểm tra tab Scenebuilder
+  if (!isScenebuilderTab()) {
+    updateScenebuilderMask(true);
+    throw 'Không phải tab Scenebuilder';
+  }
+  
   debugLog('🚀 clickGenerate: Click nút generate...');
   
   try {
@@ -1217,10 +2159,202 @@ async function clickGenerate() {
     btn.click();
     
     debugLog('✓ Đã click generate.');
-    await new Promise(r => setTimeout(r, 800));
+    await sleep(800); // Slightly less than DELAYS.LONG
     
   } catch (e) {
     debugLog('❌ clickGenerate: Lỗi ' + e);
     throw e;
   }
 }
+
+// ============================================
+// AUTO RESTORE STATE AFTER RELOAD
+// ============================================
+
+/**
+ * Tự động restore state và tiếp tục flow sau khi reload
+ */
+async function autoRestoreAndContinue() {
+  try {
+    // Đợi DOM load xong
+    if (document.readyState === 'loading') {
+      await new Promise(resolve => {
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', resolve);
+        } else {
+          resolve();
+        }
+      });
+    }
+    
+    // Đợi extension sẵn sàng (check chrome.runtime)
+    let extensionReady = false;
+    for (let i = 0; i < 10; i++) {
+      try {
+        if (chrome && chrome.runtime && chrome.runtime.id) {
+          extensionReady = true;
+          break;
+        }
+      } catch (_) {}
+      await sleep(500);
+    }
+    
+    if (!extensionReady) {
+      console.log('⚠️ Extension chưa sẵn sàng, bỏ qua auto-restore');
+      return;
+    }
+    
+    // Đợi trang load xong (check các element UI chính)
+    try {
+      debugLog('⏳ Đang đợi trang load xong sau reload...');
+    } catch (e) {
+      console.log('⏳ Đang đợi trang load xong sau reload...');
+    }
+    
+    let pageReady = false;
+    const maxPageTries = 60; // Tối đa 30s (60 * 500ms)
+    let pageTries = 0;
+    
+    while (!pageReady && pageTries < maxPageTries) {
+      // Check các element UI chính để xác định trang đã load xong
+      const textarea = getTextarea();
+      const hasGenerateButton = Array.from(document.querySelectorAll('button i.google-symbols'))
+        .some(i => i.textContent.trim() === 'arrow_forward');
+      
+      // Nếu có textarea và nút generate → trang đã load xong
+      if (textarea && hasGenerateButton) {
+        // Kiểm tra thêm: nếu có assets thì check assets, nếu chưa có thì chỉ cần UI chính
+        const assetCount = getAssetCount();
+        if (assetCount > 0) {
+          // Có assets, đợi thêm một chút để đảm bảo tất cả đã render
+          await sleep(DELAYS.LONG);
+          const assetCount2 = getAssetCount();
+          if (assetCount2 > 0) {
+            pageReady = true;
+            try {
+              debugLog(`✅ Trang đã load xong: có ${assetCount2} assets`);
+            } catch (e) {
+              console.log(`✅ Trang đã load xong: có ${assetCount2} assets`);
+            }
+            // Đợi thêm 5s để chắc chắn
+            try {
+              debugLog('⏳ Đợi thêm 5s để chắc chắn...');
+            } catch (e) {
+              console.log('⏳ Đợi thêm 5s để chắc chắn...');
+            }
+            await sleep(5000);
+            break;
+          }
+        } else {
+          // Chưa có assets nhưng UI đã sẵn sàng → trang đã load xong
+          pageReady = true;
+          try {
+            debugLog('✅ Trang đã load xong: UI sẵn sàng (chưa có video)');
+          } catch (e) {
+            console.log('✅ Trang đã load xong: UI sẵn sàng (chưa có video)');
+          }
+          // Đợi thêm 5s để chắc chắn
+          try {
+            debugLog('⏳ Đợi thêm 5s để chắc chắn...');
+          } catch (e) {
+            console.log('⏳ Đợi thêm 5s để chắc chắn...');
+          }
+          await sleep(5000);
+          break;
+        }
+      }
+      
+      await sleep(500);
+      pageTries++;
+      
+      if (pageTries % 10 === 0) {
+        try {
+          debugLog(`  Đã chờ ${pageTries * 0.5}s, đang đợi trang load...`);
+        } catch (e) {
+          console.log(`  Đã chờ ${pageTries * 0.5}s, đang đợi trang load...`);
+        }
+      }
+    }
+    
+    if (!pageReady) {
+      try {
+        debugLog('⚠️ Trang chưa load xong sau 30s, vẫn tiếp tục...');
+      } catch (e) {
+        console.log('⚠️ Trang chưa load xong sau 30s, vẫn tiếp tục...');
+      }
+    }
+    
+    // Đợi thêm 5s để ổn định sau khi thumbnail đã xuất hiện
+    try {
+      debugLog('⏳ Đang đợi 5s để ổn định sau khi thumbnail xuất hiện...');
+    } catch (e) {
+      console.log('⏳ Đang đợi 5s để ổn định sau khi thumbnail xuất hiện...');
+    }
+    await sleep(5000);
+    
+    // Kiểm tra xem có đang ở tab Scenebuilder không (sau khi DOM đã load xong)
+    // Chỉ check nếu có state để restore, nếu không có state thì không cần check
+    const hasState = await restoreFlowState();
+    if (hasState) {
+      // Có state, cần check xem có phải Scenebuilder tab không
+      if (!isScenebuilderTab()) {
+        updateScenebuilderMask(true);
+        try {
+          debugLog('⚠️ Không phải tab Scenebuilder, không thể restore state');
+        } catch (e) {
+          console.log('⚠️ Không phải tab Scenebuilder, không thể restore state');
+        }
+        // Xóa state vì không thể restore
+        await clearFlowState();
+        return;
+      }
+      
+      // Ẩn mask nếu đang hiển thị
+      updateScenebuilderMask(false);
+    }
+    
+    // Restore state và tiếp tục flow
+    if (hasState && isRunning && currentPromptIndex < prompts.length && !userStopped) {
+      try {
+        debugLog(`🔄 Tiếp tục flow từ prompt #${currentPromptIndex + 1} sau reload...`);
+      } catch (e) {
+        console.log(`🔄 Tiếp tục flow từ prompt #${currentPromptIndex + 1} sau reload...`);
+      }
+      
+      try {
+        chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Running' });
+      } catch (e) {
+        console.error('Lỗi khi gửi FLOW_STATUS: ', e);
+      }
+      
+      try {
+        sendProgressUpdate();
+      } catch (e) {
+        console.error('Lỗi khi gửi progress update: ', e);
+      }
+      
+      runFlow();
+    } else if (hasState) {
+      // Có state nhưng flow đã hoàn thành hoặc đã dừng
+      try {
+        debugLog('ℹ️ Có state nhưng flow đã hoàn thành hoặc đã dừng, xóa state...');
+      } catch (e) {
+        console.log('ℹ️ Có state nhưng flow đã hoàn thành hoặc đã dừng, xóa state...');
+      }
+      await clearFlowState();
+    }
+  } catch (e) {
+    console.error('❌ Lỗi trong autoRestoreAndContinue: ', e);
+    try {
+      debugLog('❌ Lỗi trong autoRestoreAndContinue: ' + e);
+    } catch (_) {}
+  }
+}
+
+// Tự động chạy khi script load (chỉ một lần)
+let autoRestoreCalled = false;
+if (!autoRestoreCalled) {
+  autoRestoreCalled = true;
+  autoRestoreAndContinue();
+}
+

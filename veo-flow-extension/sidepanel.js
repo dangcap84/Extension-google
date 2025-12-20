@@ -8,6 +8,7 @@ const startBtn = document.getElementById('veo-start');
 const stopBtn = document.getElementById('veo-stop');
 const imageInput = document.getElementById('veo-image-input');
 const imagePreview = document.getElementById('image-preview');
+const scenebuilderMask = document.getElementById('scenebuilder-mask');
 let selectedImageBase64 = null;
 
 // Format timestamp
@@ -31,6 +32,13 @@ function log(text) {
 // Update status
 function updateStatus(text) {
   statusEl.textContent = text;
+}
+
+// Show/hide Scenebuilder mask
+function showScenebuilderMask(show) {
+  if (scenebuilderMask) {
+    scenebuilderMask.style.display = show ? 'flex' : 'none';
+  }
 }
 
 // Load saved prompts
@@ -102,6 +110,29 @@ startBtn.addEventListener('click', async () => {
     return;
   }
   
+  // Kiểm tra xem có phải tab Scenebuilder không
+  log('🔍 Đang kiểm tra tab Scenebuilder...');
+  chrome.tabs.sendMessage(
+    tab.id,
+    { type: 'CHECK_SCENEBUILDER_TAB' },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        log('❌ Lỗi: ' + chrome.runtime.lastError.message);
+        log('💡 Thử refresh trang Google Flow');
+        return;
+      }
+      
+      if (response && response.ok) {
+        if (!response.isScenebuilder) {
+          log('❌ Không phải tab Scenebuilder! Vui lòng mở tab Scenebuilder để sử dụng extension.');
+          showScenebuilderMask(true);
+          return;
+        }
+        
+        // Ẩn mask nếu đang hiển thị
+        showScenebuilderMask(false);
+        
+        log('✅ Đã xác nhận tab Scenebuilder');
   log(`Gửi START_FLOW với ${list.length} prompt...`);
   
   // Prepare message
@@ -131,7 +162,12 @@ startBtn.addEventListener('click', async () => {
         log('✓ Đã gửi START_FLOW');
         updateStatus('Running');
       } else {
-        log('⚠️ Content script không phản hồi đúng');
+              log('⚠️ Content script không phản hồi đúng: ' + (response?.error || 'Unknown error'));
+            }
+          }
+        );
+      } else {
+        log('⚠️ Không thể kiểm tra tab Scenebuilder');
       }
     }
   );
@@ -179,6 +215,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   if (message.type === 'FLOW_STATUS') {
     updateStatus(message.status);
+  }
+  
+  if (message.type === 'SCENEBUILDER_MASK') {
+    showScenebuilderMask(message.show);
   }
 });
 
