@@ -129,6 +129,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// Validate prompt
+function validatePrompt(prompt) {
+  if (!prompt || typeof prompt !== 'string') {
+    return false;
+  }
+  // Giới hạn độ dài để tránh DoS (max 2000 ký tự)
+  const MAX_PROMPT_LENGTH = 2000;
+  if (prompt.length > MAX_PROMPT_LENGTH) {
+    return false;
+  }
+  // Kiểm tra không có script tags
+  if (prompt.includes('<script') || prompt.includes('</script>')) {
+    return false;
+  }
+  return true;
+}
+
 // Start button
 document.getElementById('startBtn').addEventListener('click', async () => {
   const promptText = document.getElementById('promptList').value.trim();
@@ -142,6 +159,13 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   
   if (prompts.length === 0) {
     log('⚠️ Không có prompt hợp lệ!');
+    return;
+  }
+  
+  // Validate tất cả prompts
+  const invalidPrompts = prompts.filter(p => !validatePrompt(p));
+  if (invalidPrompts.length > 0) {
+    log(`⚠️ Có ${invalidPrompts.length} prompt không hợp lệ (quá dài hoặc chứa ký tự không cho phép)`);
     return;
   }
   
