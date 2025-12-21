@@ -308,6 +308,10 @@
   
   // Lắng nghe message từ content script
   window.addEventListener('message', async function(e) {
+    // Validate origin để tránh XSS - chỉ chấp nhận message từ cùng origin
+    if (e.origin !== window.location.origin) {
+      return; // Bỏ qua message từ origin khác
+    }
     if (e.data && e.data.type === 'SEEK_TO_END_VIDEO_REQUEST') {
       console.log('[MAIN WORLD] Nhận request SEEK_TO_END_VIDEO_REQUEST');
       let ok = false, error = null;
@@ -322,7 +326,7 @@
         type: 'SEEK_TO_END_VIDEO_RESULT', 
         ok, 
         error 
-      }, '*');
+      }, window.location.origin);
     }
   });
   

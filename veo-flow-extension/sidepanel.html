@@ -14,12 +14,37 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
+      overflow: hidden;
+      position: relative;
     }
     #header {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
+      flex-shrink: 0;
+    }
+    .mode-toggle {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-shrink: 0;
+    }
+    .mode-toggle button {
+      flex: 1;
+      padding: 8px;
+      font-size: 13px;
+    }
+    .mode-toggle button.active {
+      background: #2563eb;
+      color: #fff;
+    }
+    .mode-toggle button.inactive {
+      background: #1e293b;
+      color: #94a3b8;
+    }
+    .mode-toggle button.inactive:hover {
+      background: #334155;
     }
     #title {
       font-weight: 700;
@@ -50,7 +75,27 @@
       height: 120px;
     }
     #veo-log {
-      height: 180px;
+      height: 120px;
+      min-height: 80px;
+      flex-shrink: 0;
+    }
+    #normal-flow-section::-webkit-scrollbar,
+    #queue-section::-webkit-scrollbar {
+      width: 6px;
+    }
+    #normal-flow-section::-webkit-scrollbar-track,
+    #queue-section::-webkit-scrollbar-track {
+      background: #0b1220;
+      border-radius: 3px;
+    }
+    #normal-flow-section::-webkit-scrollbar-thumb,
+    #queue-section::-webkit-scrollbar-thumb {
+      background: #475569;
+      border-radius: 3px;
+    }
+    #normal-flow-section::-webkit-scrollbar-thumb:hover,
+    #queue-section::-webkit-scrollbar-thumb:hover {
+      background: #64748b;
     }
     #image-section {
       display: flex;
@@ -66,6 +111,9 @@
       display: none;
     }
     #image-preview.visible {
+      display: block;
+    }
+    #queue-image-preview.visible {
       display: block;
     }
     input[type="file"] {
@@ -115,6 +163,136 @@
     button.danger:hover {
       background: #dc2626;
     }
+    button.secondary {
+      background: #475569;
+      color: #fff;
+    }
+    button.secondary:hover {
+      background: #334155;
+    }
+    button.small {
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+    .queue-input-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px;
+      background: #0b1220;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+    }
+    .queue-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 180px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 40px;
+      flex-shrink: 1;
+    }
+    .queue-list::-webkit-scrollbar {
+      width: 6px;
+    }
+    .queue-list::-webkit-scrollbar-track {
+      background: #0b1220;
+      border-radius: 3px;
+    }
+    .queue-list::-webkit-scrollbar-thumb {
+      background: #475569;
+      border-radius: 3px;
+    }
+    .queue-list::-webkit-scrollbar-thumb:hover {
+      background: #64748b;
+    }
+    .queue-item {
+      display: flex;
+      gap: 8px;
+      padding: 8px;
+      background: #0b1220;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      align-items: flex-start;
+      flex-shrink: 0;
+    }
+    .queue-item-preview {
+      width: 60px;
+      height: 60px;
+      object-fit: cover;
+      border-radius: 4px;
+      border: 1px solid #1e293b;
+      flex-shrink: 0;
+    }
+    .queue-item-preview.no-image {
+      background: #1e293b;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      color: #475569;
+    }
+    .queue-item-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .queue-item-prompt {
+      font-size: 12px;
+      color: #e2e8f0;
+      word-break: break-word;
+      line-height: 1.4;
+    }
+    .queue-item-number {
+      font-size: 10px;
+      color: #94a3b8;
+    }
+    .queue-item-actions {
+      display: flex;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .queue-item-actions button {
+      padding: 4px 8px;
+      font-size: 11px;
+    }
+    .queue-controls {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .queue-controls button {
+      flex: 1;
+    }
+    #normal-flow-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+    }
+    #normal-flow-section.hidden {
+      display: none;
+    }
+    #queue-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+    }
+    #queue-section.hidden {
+      display: none;
+    }
+    #veo-log {
+      flex-shrink: 0;
+      margin-top: auto;
+    }
   </style>
 </head>
 <body>
@@ -124,18 +302,51 @@
       <div id="status">Idle</div>
     </div>
   </div>
-  <div class="label">Ảnh bắt đầu (tùy chọn - chỉ khi chưa có video)</div>
-  <div id="image-section">
-    <input type="file" id="veo-image-input" accept="image/*">
-    <img id="image-preview" alt="Preview">
+  
+  <!-- Mode Toggle -->
+  <div class="mode-toggle">
+    <button id="normal-mode-btn" class="active">📝 Normal Flow</button>
+    <button id="queue-mode-btn" class="inactive">📋 Queue Mode</button>
   </div>
-  <div class="label">Prompts (mỗi dòng 1 prompt)</div>
-  <textarea id="veo-prompts" placeholder="Wide cinematic shot..."></textarea>
-  <div id="controls">
-    <button id="veo-start" class="primary">Start</button>
-    <button id="veo-stop" class="danger">Stop</button>
+  
+  <!-- Normal Flow Section -->
+  <div id="normal-flow-section">
+    <div class="label">Ảnh bắt đầu (tùy chọn - chỉ khi chưa có video)</div>
+    <div id="image-section">
+      <input type="file" id="veo-image-input" accept="image/*">
+      <img id="image-preview" alt="Preview">
+    </div>
+    <div class="label">Prompts (mỗi dòng 1 prompt)</div>
+    <textarea id="veo-prompts" placeholder="Wide cinematic shot..."></textarea>
+    <div id="controls">
+      <button id="veo-start" class="primary">Start</button>
+      <button id="veo-stop" class="danger">Stop</button>
+    </div>
   </div>
-  <div class="label">Log</div>
+  
+  <!-- Queue Management Section -->
+  <div id="queue-section" class="hidden">
+    <div class="queue-input-section">
+      <div class="label" style="margin-bottom: 4px;">Ảnh (tùy chọn)</div>
+      <input type="file" id="queue-image-input" accept="image/*">
+      <img id="queue-image-preview" class="image-preview" alt="Preview" style="width: 100%; max-height: 100px; object-fit: contain; border-radius: 4px; border: 1px solid #1e293b; display: none;">
+      <div class="label" style="margin-bottom: 4px; margin-top: 8px;">Prompts (mỗi dòng 1 prompt)</div>
+      <textarea id="queue-prompt-input" placeholder="Nhập prompt cho queue này...&#10;Mỗi dòng = 1 prompt" style="height: 80px; font-size: 12px;"></textarea>
+      <button id="add-queue-btn" class="primary small">➕ Add Queue</button>
+    </div>
+    <div class="label" style="margin-top: 8px;">Danh sách Queue (<span id="queue-count">0</span>)</div>
+    <div id="queue-list" class="queue-list"></div>
+    <div class="queue-controls">
+      <button id="start-queue-btn" class="primary">▶️ Start Queue</button>
+      <button id="stop-queue-btn" class="danger" style="display: none;">⏹️ Stop Queue</button>
+      <button id="clear-queue-btn" class="secondary">🗑️ Clear All</button>
+    </div>
+    <div id="queue-progress" style="margin-top: 8px; padding: 8px; background: #1e293b; border-radius: 4px; font-size: 12px; color: #e2e8f0; display: none;">
+      <div>📊 <span id="queue-progress-text">Đang chờ...</span></div>
+    </div>
+  </div>
+  
+  <div class="label" style="flex-shrink: 0; margin-top: 8px;">Log</div>
   <textarea id="veo-log" readonly></textarea>
   
   <!-- Mask overlay khi không phải tab Scenebuilder -->

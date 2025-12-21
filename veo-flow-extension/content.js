@@ -320,9 +320,16 @@ let isRunning = false;
 let prompts = [];
 let currentPromptIndex = 0;
 let totalPrompts = 0;
+let totalPromptsProcessed = 0; // Tổng số prompt đã xử lý trong queue flow
 let restartTimeoutId = null;
 let userStopped = false;
 let initialImageFile = null; // Base64 string của ảnh bắt đầu
+
+// Queue state
+let queueList = [];
+let currentQueueIndex = 0;
+let currentPromptIndexInQueue = 0; // Index của prompt hiện tại trong queue item đang xử lý
+let isQueueMode = false;
 
 function clearRestartTimer() {
   if (restartTimeoutId) {
@@ -332,35 +339,15 @@ function clearRestartTimer() {
 }
 
 /**
- * Kiểm tra localStorage có sẵn sàng không
- * LƯU Ý: Chỉ dùng localStorage, KHÔNG dùng chrome.storage (gây lỗi trong content script)
- */
-function isLocalStorageAvailable() {
-  try {
-    if (typeof Storage === 'undefined' || typeof localStorage === 'undefined') {
-      return false;
-    }
-    // Test xem localStorage có hoạt động không
-    const test = '__storage_test__';
-    localStorage.setItem(test, test);
-    localStorage.removeItem(test);
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-/**
- * Lưu state vào localStorage để restore sau khi reload
- * LƯU Ý: Chỉ dùng localStorage, KHÔNG dùng chrome.storage (gây lỗi trong content script)
+ * Lưu state vào chrome.storage.local để restore sau khi reload
+ * Sử dụng chrome.storage thay vì localStorage để bảo mật hơn
  */
 async function saveFlowState() {
   try {
-    // Kiểm tra localStorage có sẵn sàng không
-    if (typeof localStorage === 'undefined' || !isLocalStorageAvailable()) {
-      console.error('⚠️ localStorage không sẵn sàng, không thể lưu state');
+    if (!chrome.storage || !chrome.storage.local) {
+      console.error('⚠️ chrome.storage không sẵn sàng, không thể lưu state');
       try {
-        debugLog('⚠️ localStorage không sẵn sàng, không thể lưu state');
+        debugLog('⚠️ chrome.storage không sẵn sàng, không thể lưu state');
       } catch (_) {}
       return false;
     }
@@ -373,8 +360,16 @@ async function saveFlowState() {
       isRunning: isRunning
     };
     
-    // CHỈ dùng localStorage, KHÔNG dùng chrome.storage
-    localStorage.setItem('veoFlowState', JSON.stringify(stateData));
+    // Sử dụng chrome.storage.local thay vì localStorage để bảo mật hơn
+    await new Promise((resolve, reject) => {
+      chrome.storage.local.set({ veoFlowState: stateData }, () => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve();
+        }
+      });
+    });
     
     try {
       debugLog('💾 Đã lưu state flow');
@@ -392,34 +387,35 @@ async function saveFlowState() {
 }
 
 /**
- * Restore state từ localStorage sau khi reload
- * LƯU Ý: Chỉ dùng localStorage, KHÔNG dùng chrome.storage (gây lỗi trong content script)
+ * Restore state từ chrome.storage.local sau khi reload
+ * Sử dụng chrome.storage thay vì localStorage để bảo mật hơn
  */
 async function restoreFlowState() {
   try {
-    // Kiểm tra localStorage có sẵn sàng không
-    if (typeof localStorage === 'undefined' || !isLocalStorageAvailable()) {
-      console.error('⚠️ localStorage không sẵn sàng, không thể restore state');
+    if (!chrome.storage || !chrome.storage.local) {
+      console.error('⚠️ chrome.storage không sẵn sàng, không thể restore state');
       try {
-        debugLog('⚠️ localStorage không sẵn sàng, không thể restore state');
+        debugLog('⚠️ chrome.storage không sẵn sàng, không thể restore state');
       } catch (_) {}
       return false;
     }
     
-    // CHỈ đọc từ localStorage, KHÔNG dùng chrome.storage
-    const saved = localStorage.getItem('veoFlowState');
-    if (!saved) {
+    // Đọc từ chrome.storage.local
+    const data = await new Promise((resolve, reject) => {
+      chrome.storage.local.get(['veoFlowState'], (result) => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve(result);
+        }
+      });
+    });
+    
+    if (!data || !data.veoFlowState) {
       return false;
     }
     
-    let state = null;
-    try {
-      state = JSON.parse(saved);
-    } catch (e) {
-      console.error('⚠️ Lỗi khi parse state từ localStorage: ', e);
-      localStorage.removeItem('veoFlowState');
-      return false;
-    }
+    const state = data.veoFlowState;
     
     if (state) {
       prompts = state.prompts || [];
@@ -454,18 +450,25 @@ async function restoreFlowState() {
 
 /**
  * Xóa state đã lưu
- * LƯU Ý: Chỉ dùng localStorage, KHÔNG dùng chrome.storage (gây lỗi trong content script)
+ * Sử dụng chrome.storage thay vì localStorage để bảo mật hơn
  */
 async function clearFlowState() {
   try {
-    // Kiểm tra localStorage có sẵn sàng không
-    if (typeof localStorage === 'undefined' || !isLocalStorageAvailable()) {
-      console.error('⚠️ localStorage không sẵn sàng, không thể xóa state');
+    if (!chrome.storage || !chrome.storage.local) {
+      console.error('⚠️ chrome.storage không sẵn sàng, không thể xóa state');
       return false;
     }
     
-    // CHỈ xóa từ localStorage, KHÔNG dùng chrome.storage
-    localStorage.removeItem('veoFlowState');
+    // Xóa từ chrome.storage.local
+    await new Promise((resolve, reject) => {
+      chrome.storage.local.remove(['veoFlowState'], () => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve();
+        }
+      });
+    });
     
     try {
       debugLog('🗑️ Đã xóa state flow');
@@ -477,6 +480,159 @@ async function clearFlowState() {
     console.error('⚠️ Lỗi khi xóa state: ', e);
     try {
       debugLog('⚠️ Lỗi khi xóa state: ' + e);
+    } catch (_) {}
+    return false;
+  }
+}
+
+/**
+ * Lưu queue state vào chrome.storage.local để restore sau khi reload
+ */
+async function saveQueueState() {
+  try {
+    if (!chrome.storage || !chrome.storage.local) {
+      console.error('⚠️ chrome.storage không sẵn sàng, không thể lưu queue state');
+      try {
+        debugLog('⚠️ chrome.storage không sẵn sàng, không thể lưu queue state');
+      } catch (_) {}
+      return false;
+    }
+    
+    const stateData = {
+      queueList: queueList,
+      currentQueueIndex: currentQueueIndex,
+      currentPromptIndexInQueue: currentPromptIndexInQueue || 0,
+      isQueueMode: isQueueMode,
+      isRunning: isRunning,
+      totalPromptsProcessed: totalPromptsProcessed || 0
+    };
+    
+    await new Promise((resolve, reject) => {
+      chrome.storage.local.set({ veoQueueState: stateData }, () => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve();
+        }
+      });
+    });
+    
+    try {
+      debugLog('💾 Đã lưu queue state');
+    } catch (e) {
+      console.log('💾 Đã lưu queue state');
+    }
+    return true;
+  } catch (e) {
+    console.error('⚠️ Lỗi khi lưu queue state: ', e);
+    try {
+      debugLog('⚠️ Lỗi khi lưu queue state: ' + e);
+    } catch (_) {}
+    return false;
+  }
+}
+
+/**
+ * Restore queue state từ chrome.storage.local sau khi reload
+ */
+async function restoreQueueState() {
+  try {
+    if (!chrome.storage || !chrome.storage.local) {
+      console.error('⚠️ chrome.storage không sẵn sàng, không thể restore queue state');
+      try {
+        debugLog('⚠️ chrome.storage không sẵn sàng, không thể restore queue state');
+      } catch (_) {}
+      return false;
+    }
+    
+    const data = await new Promise((resolve, reject) => {
+      chrome.storage.local.get(['veoQueueState'], (result) => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve(result);
+        }
+      });
+    });
+    
+    if (!data || !data.veoQueueState) {
+      return false;
+    }
+    
+    const state = data.veoQueueState;
+    
+    if (state) {
+      queueList = state.queueList || [];
+      currentQueueIndex = state.currentQueueIndex || 0;
+      currentPromptIndexInQueue = state.currentPromptIndexInQueue || 0;
+      isQueueMode = state.isQueueMode || false;
+      isRunning = state.isRunning || false;
+      totalPromptsProcessed = state.totalPromptsProcessed || 0;
+      
+      // Kiểm tra tính hợp lệ của state
+      if (queueList.length === 0 || currentQueueIndex < 0 || currentQueueIndex >= queueList.length) {
+        console.log('⚠️ Queue state không hợp lệ, xóa state...');
+        await clearQueueState();
+        return false;
+      }
+      
+      // Kiểm tra tính hợp lệ của currentPromptIndexInQueue
+      const currentQueueItem = queueList[currentQueueIndex];
+      if (currentQueueItem) {
+        const prompts = Array.isArray(currentQueueItem.prompts) ? currentQueueItem.prompts : (currentQueueItem.prompt ? [currentQueueItem.prompt] : []);
+        if (currentPromptIndexInQueue < 0 || currentPromptIndexInQueue >= prompts.length) {
+          console.log('⚠️ currentPromptIndexInQueue không hợp lệ, reset về 0...');
+          currentPromptIndexInQueue = 0;
+        }
+      }
+      
+      try {
+        debugLog(`🔄 Đã restore queue state: queue ${currentQueueIndex + 1}/${queueList.length}, prompt index ${currentPromptIndexInQueue}, prompts processed: ${totalPromptsProcessed}`);
+      } catch (e) {
+        console.log(`🔄 Đã restore queue state: queue ${currentQueueIndex + 1}/${queueList.length}, prompt index ${currentPromptIndexInQueue}, prompts processed: ${totalPromptsProcessed}`);
+      }
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.error('⚠️ Lỗi khi restore queue state: ', e);
+    try {
+      debugLog('⚠️ Lỗi khi restore queue state: ' + e);
+    } catch (_) {}
+    return false;
+  }
+}
+
+/**
+ * Xóa queue state đã lưu
+ */
+async function clearQueueState() {
+  try {
+    if (!chrome.storage || !chrome.storage.local) {
+      console.error('⚠️ chrome.storage không sẵn sàng, không thể xóa queue state');
+      return false;
+    }
+    
+    await new Promise((resolve, reject) => {
+      chrome.storage.local.remove(['veoQueueState'], () => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve();
+        }
+      });
+    });
+    
+    try {
+      debugLog('🗑️ Đã xóa queue state');
+    } catch (e) {
+      console.log('🗑️ Đã xóa queue state');
+    }
+    return true;
+  } catch (e) {
+    console.error('⚠️ Lỗi khi xóa queue state: ', e);
+    try {
+      debugLog('⚠️ Lỗi khi xóa queue state: ' + e);
     } catch (_) {}
     return false;
   }
@@ -607,6 +763,12 @@ async function waitForThumbnailAfterCrop(timeout = TIMEOUTS.THUMBNAIL_CHECK) {
   let tries = 0;
   
   while (!thumbnailVisible && !plusButtonGone && tries < maxTries) {
+    // Check userStopped
+    if (userStopped) {
+      debugLog('⏹️ User đã dừng, thoát khỏi vòng chờ thumbnail');
+      throw 'User đã dừng';
+    }
+    
     thumbnailVisible = isImageThumbnailVisible();
     plusButtonGone = !isPlusButtonStillVisible();
     
@@ -634,6 +796,74 @@ async function waitForThumbnailAfterCrop(timeout = TIMEOUTS.THUMBNAIL_CHECK) {
 }
 
 // ============================================
+// VALIDATION FUNCTIONS
+// ============================================
+
+/**
+ * Validate prompt để tránh injection và DoS
+ * @param {string} prompt - Prompt text để validate
+ * @returns {boolean} true nếu hợp lệ
+ */
+function validatePrompt(prompt) {
+  if (!prompt || typeof prompt !== 'string') {
+    return false;
+  }
+  
+
+  
+  // Kiểm tra không có script tags hoặc các ký tự nguy hiểm
+  if (prompt.includes('<script') || prompt.includes('</script>')) {
+    return false;
+  }
+  
+  return true;
+}
+
+/**
+ * Validate base64 image data
+ * @param {string} imageBase64 - Base64 data URL
+ * @returns {boolean} true nếu hợp lệ
+ */
+function validateBase64Image(imageBase64) {
+  if (!imageBase64 || typeof imageBase64 !== 'string') {
+    return false;
+  }
+  
+  // Kiểm tra format data URL
+  if (!imageBase64.startsWith('data:image/')) {
+    return false;
+  }
+  
+  // Kiểm tra có base64 data không
+  const parts = imageBase64.split(',');
+  if (parts.length !== 2 || !parts[1]) {
+    return false;
+  }
+  
+  // Kiểm tra mime type hợp lệ
+  const mimeMatch = imageBase64.match(/data:image\/([^;]+);/);
+  if (!mimeMatch) {
+    return false;
+  }
+  
+  const validTypes = ['jpeg', 'jpg', 'png', 'gif', 'webp'];
+  const imageType = mimeMatch[1].toLowerCase();
+  if (!validTypes.includes(imageType)) {
+    return false;
+  }
+  
+  // Kiểm tra kích thước base64 (ước tính max 15MB khi decode)
+  const base64Data = parts[1];
+  const estimatedSize = (base64Data.length * 3) / 4; // Base64 encoding overhead
+  const MAX_SIZE = 15 * 1024 * 1024; // 15MB
+  if (estimatedSize > MAX_SIZE) {
+    return false;
+  }
+  
+  return true;
+}
+
+// ============================================
 // MESSAGING & DEBUG
 // ============================================
 
@@ -651,12 +881,39 @@ function sendProgressUpdate() {
   } catch (_) {}
 }
 
+function sendQueueProgressUpdate() {
+  try {
+    // Tính toán thông tin chi tiết về queue và prompt hiện tại
+    let currentQueueNum = currentQueueIndex + 1;
+    let currentPromptNum = 0;
+    let totalPromptsInCurrentQueue = 0;
+    
+    if (currentQueueIndex < queueList.length) {
+      const currentQueueItem = queueList[currentQueueIndex];
+      const prompts = Array.isArray(currentQueueItem.prompts) ? currentQueueItem.prompts : (currentQueueItem.prompt ? [currentQueueItem.prompt] : []);
+      totalPromptsInCurrentQueue = prompts.length;
+      currentPromptNum = currentPromptIndexInQueue + 1; // +1 vì hiển thị từ 1, không phải 0
+    }
+    
+    chrome.runtime.sendMessage({
+      type: 'QUEUE_PROGRESS_UPDATE',
+      done: currentQueueIndex,
+      total: queueList.length,
+      currentQueueNum: currentQueueNum,
+      currentPromptNum: currentPromptNum,
+      totalPromptsInCurrentQueue: totalPromptsInCurrentQueue,
+      totalPromptsProcessed: totalPromptsProcessed
+    });
+  } catch (_) {}
+}
+
 
 // Helper: Kiểm tra có progress % đang chạy không
 function isProgressRunning() {
   return Array.from(document.querySelectorAll('*')).some(el => {
     const text = el.textContent.trim();
-    return /^\d+%$/.test(text) && el.offsetParent !== null;
+    // Cho phép có khoảng trắng giữa số và dấu % (ví dụ: "0 %" hoặc "0%")
+    return /^\d+\s*%$/.test(text) && el.offsetParent !== null;
   });
 }
 
@@ -715,8 +972,38 @@ function updateScenebuilderMask(show) {
 
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Validate sender - chỉ chấp nhận message từ extension
+  if (!sender || sender.id !== chrome.runtime.id) {
+    console.warn('⚠️ Message từ sender không hợp lệ:', sender);
+    return false;
+  }
+  
+  // Validate message structure
+  if (!message || typeof message !== 'object' || !message.type) {
+    console.warn('⚠️ Message không hợp lệ:', message);
+    return false;
+  }
+  
   // Xử lý async messages
   if (message.type === 'START_FLOW') {
+    // Validate START_FLOW message structure
+    if (!Array.isArray(message.prompts) || message.prompts.length === 0) {
+      sendResponse && sendResponse({ ok: false, error: 'Prompts không hợp lệ' });
+      return false;
+    }
+    
+    // Validate prompts
+    const invalidPrompts = message.prompts.filter(p => !validatePrompt(p));
+    if (invalidPrompts.length > 0) {
+      sendResponse && sendResponse({ ok: false, error: `Có ${invalidPrompts.length} prompt không hợp lệ` });
+      return false;
+    }
+    
+    // Validate initialImageFile nếu có
+    if (message.initialImageFile && !validateBase64Image(message.initialImageFile)) {
+      sendResponse && sendResponse({ ok: false, error: 'Base64 image không hợp lệ' });
+      return false;
+    }
     (async () => {
       try {
     if (isRunning) {
@@ -777,19 +1064,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'STOP_FLOW') {
     (async () => {
       try {
-    userStopped = true;
-    isRunning = false;
-    clearRestartTimer();
-        await clearFlowState(); // Xóa state khi user dừng flow
+        // Dừng ngay lập tức - set flags trước
+        userStopped = true;
+        isRunning = false;
+        
+        // Clear tất cả timers
+        clearRestartTimer();
+        
+        // Clear tất cả state
+        await clearFlowState();
+        await clearQueueState();
+        
+        // Reset các biến state
+        prompts = [];
+        queueList = [];
+        currentPromptIndex = 0;
+        currentQueueIndex = 0;
+        currentPromptIndexInQueue = 0;
+        totalPrompts = 0;
+        totalPromptsProcessed = 0;
+        isQueueMode = false;
+        initialImageFile = null;
         
         try {
-    chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
+          chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
         } catch (e) {
           console.error('Lỗi khi gửi FLOW_STATUS: ', e);
         }
         
-    debugLog('Đã dừng flow');
-    sendResponse && sendResponse({ ok: true });
+        debugLog('⏹️ Đã dừng toàn bộ flow và queue');
+        sendResponse && sendResponse({ ok: true });
       } catch (e) {
         console.error('Lỗi trong STOP_FLOW: ', e);
         sendResponse && sendResponse({ ok: false, error: String(e) });
@@ -802,6 +1106,106 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     debugLog('content.js đã nhận DEBUG_TEST');
     sendResponse && sendResponse({ ok: true });
     return false; // Response đồng bộ
+  }
+  
+  if (message.type === 'START_QUEUE') {
+    // Validate START_QUEUE message structure
+    if (!Array.isArray(message.queueList) || message.queueList.length === 0) {
+      sendResponse && sendResponse({ ok: false, error: 'Queue list không hợp lệ' });
+      return false;
+    }
+    
+    // Validate queue items
+    for (let i = 0; i < message.queueList.length; i++) {
+      const queueItem = message.queueList[i];
+      
+      // Validate prompts (có thể là array hoặc string - backward compatible)
+      let prompts = [];
+      if (Array.isArray(queueItem.prompts)) {
+        prompts = queueItem.prompts;
+      } else if (queueItem.prompt && typeof queueItem.prompt === 'string') {
+        prompts = [queueItem.prompt];
+      } else {
+        sendResponse && sendResponse({ ok: false, error: `Queue #${i + 1}: prompts không hợp lệ` });
+        return false;
+      }
+      
+      if (prompts.length === 0) {
+        sendResponse && sendResponse({ ok: false, error: `Queue #${i + 1}: không có prompt nào` });
+        return false;
+      }
+      
+      // Validate từng prompt
+      for (let j = 0; j < prompts.length; j++) {
+        if (!validatePrompt(prompts[j])) {
+          sendResponse && sendResponse({ ok: false, error: `Queue #${i + 1}, Prompt #${j + 1}: không hợp lệ (chứa ký tự không cho phép)` });
+          return false;
+        }
+      }
+      
+      // Validate image if provided
+      if (queueItem.imageBase64 !== null && queueItem.imageBase64 !== undefined) {
+        if (!validateBase64Image(queueItem.imageBase64)) {
+          sendResponse && sendResponse({ ok: false, error: `Queue #${i + 1}: Base64 image không hợp lệ` });
+          return false;
+        }
+      }
+    }
+    
+    (async () => {
+      try {
+        if (isRunning) {
+          debugLog('Đã chạy rồi, bỏ qua START_QUEUE');
+          sendResponse && sendResponse({ ok: false, error: 'Đã chạy rồi' });
+          return;
+        }
+        
+        // Kiểm tra xem có đang ở tab Scenebuilder không
+        if (!isScenebuilderTab()) {
+          debugLog('❌ Không phải tab Scenebuilder! Vui lòng mở tab Scenebuilder để sử dụng extension.');
+          updateScenebuilderMask(true);
+          sendResponse && sendResponse({ ok: false, error: 'Không phải tab Scenebuilder' });
+          return;
+        }
+        
+        // Ẩn mask nếu đang hiển thị
+        updateScenebuilderMask(false);
+        
+        userStopped = false;
+        clearRestartTimer();
+        await clearQueueState(); // Xóa state cũ khi bắt đầu queue mới
+        
+        // Kiểm tra nếu còn video đang render thì không cho chạy queue mới
+        if (isProgressRunning()) {
+          debugLog('⚠️ Đang có video render, không thể chạy queue mới!');
+          sendResponse && sendResponse({ ok: false, error: 'Video đang render' });
+          return;
+        }
+        
+        // Set queue mode
+        queueList = message.queueList;
+        currentQueueIndex = 0;
+        currentPromptIndexInQueue = 0; // Reset khi bắt đầu queue mới
+        totalPromptsProcessed = 0; // Reset counter khi bắt đầu queue mới
+        isQueueMode = true;
+        isRunning = true;
+        
+        try {
+          chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Queue Running' });
+        } catch (e) {
+          console.error('Lỗi khi gửi FLOW_STATUS: ', e);
+        }
+        
+        debugLog('Bắt đầu queue với ' + queueList.length + ' queue items');
+        sendQueueProgressUpdate();
+        runQueueFlow();
+        sendResponse && sendResponse({ ok: true });
+      } catch (e) {
+        console.error('Lỗi trong START_QUEUE: ', e);
+        sendResponse && sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true; // Báo cho Chrome biết sẽ gửi response bất đồng bộ
   }
   
   if (message.type === 'CHECK_SCENEBUILDER_TAB') {
@@ -935,6 +1339,9 @@ async function runFlow() {
           // Retry: Ảnh đã có sẵn, chỉ cần chọn lại asset đầu tiên
           debugLog(`🔄 Retry lần ${imageFlowRetryCount}/5: Chọn lại ảnh đã upload...`);
           
+          // Check mode Frame to Video trước khi chọn ảnh (quan trọng khi retry)
+          await ensureFrameToVideoMode();
+          
           // Đóng menu frame nếu còn mở (từ lần generate trước)
           await closeMenuFrame();
           await sleep(DELAYS.LONG);
@@ -956,6 +1363,12 @@ async function runFlow() {
         const maxCheckTries = RETRY_LIMITS.THUMBNAIL_CHECK;
         
         while (isPlusButtonStillVisible() && checkTries < maxCheckTries) {
+          // Check userStopped
+          if (userStopped) {
+            debugLog('⏹️ User đã dừng, thoát khỏi vòng chờ thumbnail');
+            throw 'User đã dừng';
+          }
+          
           await sleep(DELAYS.NORMAL);
           checkTries++;
           
@@ -1007,10 +1420,22 @@ async function runFlow() {
         let noProgressStartTime = null; // Thời điểm bắt đầu không có progress
         
         while (newAssetCount <= prevAssetCount && waitTries < TIMEOUTS.ASSET_WAIT / 1000) {
+          // Check userStopped trước mỗi lần lặp
+          if (userStopped) {
+            debugLog('⏹️ User đã dừng, thoát khỏi vòng chờ');
+            return;
+          }
+          
           const progressRunning = isProgressRunning();
           
           // Phát hiện progress biến mất (từ có → không có)
           if (progressWasRunning && !progressRunning && !progressDisappeared) {
+            // Check userStopped trước khi reload
+            if (userStopped) {
+              debugLog('⏹️ User đã dừng, không reload');
+              return;
+            }
+            
             debugLog('⚠️ Progress % đã biến mất, kiểm tra số lượng video ngay...');
             // Không đợi 3s, check ngay lập tức để phát hiện lỗi nhanh hơn
             await sleep(500); // Chỉ đợi 0.5s để DOM cập nhật
@@ -1041,6 +1466,12 @@ async function runFlow() {
               const noProgressDuration = Date.now() - noProgressStartTime;
               // Nếu không có progress trong 10 giây và số video không tăng → reload
               if (noProgressDuration > 10000 && newAssetCount <= prevAssetCount) {
+                // Check userStopped trước khi reload
+                if (userStopped) {
+                  debugLog('⏹️ User đã dừng, không reload');
+                  return;
+                }
+                
                 debugLog(`⚠️ Không có progress trong ${Math.floor(noProgressDuration/1000)}s và số video không tăng (${prevAssetCount} → ${newAssetCount})`);
                 debugLog('🔄 Đang reload trang để retry prompt này...');
                 await saveFlowState();
@@ -1097,7 +1528,19 @@ async function runFlow() {
         }
         
       } catch (e) {
+        // Check userStopped trước
+        if (userStopped) {
+          debugLog('⏹️ User đã dừng, không retry');
+          return;
+        }
+        
         const errorMsg = e instanceof Error ? e.message : String(e);
+        
+        // Kiểm tra nếu là lỗi user dừng
+        if (errorMsg === 'User đã dừng' || errorMsg.includes('User đã dừng')) {
+          debugLog('⏹️ User đã dừng, không retry');
+          return;
+        }
         
         // Kiểm tra nếu là lỗi trang chết, reload ngay lập tức
         if (e instanceof Error && e.isPageDead) {
@@ -1175,10 +1618,22 @@ async function runFlow() {
           let noProgressStartTime = null; // Thời điểm bắt đầu không có progress
           
           while (newAssetCount <= prevAssetCount && waitTries < TIMEOUTS.ASSET_WAIT / 1000) {
+            // Check userStopped trước mỗi lần lặp
+            if (userStopped) {
+              debugLog('⏹️ User đã dừng, thoát khỏi vòng chờ');
+              return;
+            }
+            
             const progressRunning = isProgressRunning();
             
             // Phát hiện progress biến mất (từ có → không có)
             if (progressWasRunning && !progressRunning && !progressDisappeared) {
+              // Check userStopped trước khi reload
+              if (userStopped) {
+                debugLog('⏹️ User đã dừng, không reload');
+                return;
+              }
+              
               debugLog('⚠️ Progress % đã biến mất, kiểm tra số lượng video ngay...');
               // Không đợi 3s, check ngay lập tức để phát hiện lỗi nhanh hơn
               await sleep(500); // Chỉ đợi 0.5s để DOM cập nhật
@@ -1209,6 +1664,12 @@ async function runFlow() {
                 const noProgressDuration = Date.now() - noProgressStartTime;
                 // Nếu không có progress trong 10 giây và số video không tăng → reload
                 if (noProgressDuration > 10000 && newAssetCount <= prevAssetCount) {
+                  // Check userStopped trước khi reload
+                  if (userStopped) {
+                    debugLog('⏹️ User đã dừng, không reload');
+                    return;
+                  }
+                  
                   debugLog(`⚠️ Không có progress trong ${Math.floor(noProgressDuration/1000)}s và số video không tăng (${prevAssetCount} → ${newAssetCount})`);
                   debugLog('🔄 Đang reload trang để retry prompt này...');
                   await saveFlowState();
@@ -1263,7 +1724,19 @@ async function runFlow() {
             return; // Dừng flow, sẽ tiếp tục sau khi reload
           }
         } catch (e) {
+          // Check userStopped trước
+          if (userStopped) {
+            debugLog('⏹️ User đã dừng, không retry');
+            return;
+          }
+          
           const errorMsg = e instanceof Error ? e.message : String(e);
+          
+          // Kiểm tra nếu là lỗi user dừng
+          if (errorMsg === 'User đã dừng' || errorMsg.includes('User đã dừng')) {
+            debugLog('⏹️ User đã dừng, không retry');
+            return;
+          }
           
           // Kiểm tra nếu là lỗi trang chết, reload ngay lập tức
           if (e instanceof Error && e.isPageDead) {
@@ -1293,7 +1766,22 @@ async function runFlow() {
       }
 
     } catch (e) {
+      // Check userStopped trước
+      if (userStopped) {
+        debugLog('⏹️ User đã dừng, không schedule auto-restart');
+        isRunning = false;
+        return;
+      }
+      
       const errorMsg = e instanceof Error ? e.message : String(e);
+      
+      // Kiểm tra nếu là lỗi user dừng
+      if (errorMsg === 'User đã dừng' || errorMsg.includes('User đã dừng')) {
+        debugLog('⏹️ User đã dừng, không schedule auto-restart');
+        isRunning = false;
+        return;
+      }
+      
       debugLog(`❌ Lỗi không mong đợi trong runFlow: ${errorMsg}`);
       isRunning = false;
       scheduleAutoRestart('exception');
@@ -1304,6 +1792,612 @@ async function runFlow() {
   debugLog('🎉 Kết thúc flow.');
   isRunning = false;
   await clearFlowState(); // Xóa state đã lưu
+  chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Idle' });
+}
+
+// ============================================
+// QUEUE FLOW
+// ============================================
+async function runQueueFlow() {
+  // Kiểm tra xem có đang ở tab Scenebuilder không
+  if (!isScenebuilderTab()) {
+    debugLog('❌ Không phải tab Scenebuilder! Dừng queue.');
+    updateScenebuilderMask(true);
+    isRunning = false;
+    chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
+    return;
+  }
+  
+  // Ẩn mask nếu đang hiển thị
+  updateScenebuilderMask(false);
+  
+  // Khởi tạo totalPromptsProcessed nếu chưa có (từ state restore)
+  if (totalPromptsProcessed === undefined) {
+    totalPromptsProcessed = 0;
+  }
+  
+  // Chạy từng queue item
+  while (isRunning && currentQueueIndex < queueList.length) {
+    if (userStopped) {
+      debugLog('⏹️ Queue dừng theo yêu cầu người dùng.');
+      isRunning = false;
+      chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
+      return;
+    }
+    
+    const queueItem = queueList[currentQueueIndex];
+    
+    // Lấy prompts (backward compatible: có thể là array hoặc string)
+    const prompts = Array.isArray(queueItem.prompts) ? queueItem.prompts : (queueItem.prompt ? [queueItem.prompt] : []);
+    
+    debugLog(`🎬 Đang xử lý Queue #${currentQueueIndex + 1}/${queueList.length} với ${prompts.length} prompt(s)`);
+    
+    // Xử lý từng prompt trong queue item này, bắt đầu từ currentPromptIndexInQueue (để restore sau reload)
+    for (let promptIndex = currentPromptIndexInQueue; promptIndex < prompts.length; promptIndex++) {
+      if (userStopped) {
+        debugLog('⏹️ Queue dừng theo yêu cầu người dùng.');
+        isRunning = false;
+        chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
+        return;
+      }
+      
+      const prompt = prompts[promptIndex];
+      debugLog(`📝 Prompt ${promptIndex + 1}/${prompts.length}: ${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`);
+      
+      try {
+        const prevAssetCount = getAssetCount();
+        debugLog('📊 Số assets trước khi chờ render: ' + prevAssetCount);
+        
+        let success = false;
+        let retryCount = 0;
+        
+        while (!success && retryCount < RETRY_LIMITS.PROMPT && !userStopped) {
+          try {
+            // Queue đầu tiên (index 0) và prompt đầu tiên (promptIndex 0)
+            if (currentQueueIndex === 0 && promptIndex === 0) {
+              if (queueItem.imageBase64) {
+                // Có ảnh: upload ảnh → crop → chọn asset → nhập prompt → generate
+                // Sử dụng image flow retry logic giống flow bình thường
+                let imageFlowSuccess = false;
+                let imageFlowRetryCount = 0;
+                
+                while (!imageFlowSuccess && imageFlowRetryCount < RETRY_LIMITS.IMAGE_FLOW && !userStopped) {
+                  try {
+                    if (imageFlowRetryCount === 0) {
+                      // Lần đầu tiên: Upload ảnh và crop
+                      debugLog('📷 Queue đầu tiên có ảnh, đang upload...');
+                      
+                      // 1. Chọn mode Frame to Video
+                      await ensureFrameToVideoMode();
+                      
+                      // 2. Upload ảnh
+                      await uploadImageFromFile(queueItem.imageBase64);
+                      
+                      // 3. Xử lý preview và crop
+                      const hasDialog = await handleImagePreviewAndCrop();
+                      
+                      if (hasDialog) {
+                        debugLog('📋 Có dialog Notice, cần chọn asset mới nhất');
+                        await openImagePicker();
+                        await selectLatestAsset();
+                      } else {
+                        debugLog('✅ Không có dialog, ảnh đã tự động được chọn');
+                      }
+                    } else {
+                      // Retry: Ảnh đã có sẵn, chỉ cần chọn lại asset đầu tiên
+                      debugLog(`🔄 Retry lần ${imageFlowRetryCount}/${RETRY_LIMITS.IMAGE_FLOW}: Chọn lại ảnh đã upload...`);
+                      
+                      // Check mode Frame to Video trước khi chọn ảnh (quan trọng khi retry)
+                      await ensureFrameToVideoMode();
+                      
+                      // Đóng menu frame nếu còn mở (từ lần generate trước)
+                      await closeMenuFrame();
+                      await sleep(DELAYS.LONG);
+                      
+                      // Mở image picker và chọn asset đầu tiên
+                      debugLog('📂 Đang mở image picker để chọn lại asset...');
+                      await openImagePicker();
+                      await sleep(DELAYS.LONG);
+                      
+                      debugLog('🎯 Đang chọn asset đầu tiên...');
+                      await selectLatestAsset();
+                      debugLog('✅ Đã chọn asset đầu tiên xong');
+                    }
+                    
+                    // Kiểm tra dấu "+" đã chuyển thành thumbnail chưa trước khi nhập prompt
+                    debugLog('⏳ Kiểm tra dấu "+" đã chuyển thành thumbnail...');
+                    let plusButtonGone = false;
+                    let checkTries = 0;
+                    const maxCheckTries = RETRY_LIMITS.THUMBNAIL_CHECK;
+                    
+                    while (isPlusButtonStillVisible() && checkTries < maxCheckTries) {
+                      // Check userStopped
+                      if (userStopped) {
+                        debugLog('⏹️ User đã dừng, thoát khỏi vòng chờ thumbnail');
+                        throw 'User đã dừng';
+                      }
+                      
+                      await sleep(DELAYS.NORMAL);
+                      checkTries++;
+                      
+                      // Kiểm tra lại xem thumbnail đã xuất hiện chưa
+                      if (isImageThumbnailVisible()) {
+                        plusButtonGone = true;
+                        break;
+                      }
+                      
+                      if (checkTries % 4 === 0) {
+                        debugLog(`  Đã chờ ${checkTries * 0.5}s, dấu "+" vẫn còn...`);
+                      }
+                    }
+                    
+                    // Kiểm tra lại một lần nữa sau khi chờ
+                    const finalThumbnailVisible = isImageThumbnailVisible();
+                    const finalPlusButtonVisible = isPlusButtonStillVisible();
+                    
+                    if (finalThumbnailVisible) {
+                      // Thumbnail đã xuất hiện → OK, không cần quan tâm nút "+" nữa
+                      debugLog('✅ Thumbnail đã xuất hiện, dấu "+" đã được thay thế');
+                    } else if (!finalPlusButtonVisible) {
+                      // Nút "+" đã biến mất → OK, có thể thumbnail đang load
+                      debugLog('✅ Dấu "+" đã biến mất, thumbnail có thể đã xuất hiện');
+                    } else {
+                      // Sau 10s mà dấu "+" vẫn còn và thumbnail chưa xuất hiện
+                      debugLog('⚠️ Dấu "+" chưa chuyển thành thumbnail sau 10s, tắt menu frame và retry...');
+                      await closeMenuFrame();
+                      throw 'Dấu "+" chưa chuyển thành thumbnail sau 10s';
+                    }
+                    
+                    // 4. Nhập prompt
+                    debugLog('⌨️ Đang nhập prompt...');
+                    await inputPrompt(prompt);
+                    
+                    // 5. Click generate
+                    debugLog('🚀 Đang click generate...');
+                    await clickGenerate();
+                    
+                    imageFlowSuccess = true;
+                  } catch (e) {
+                    // Check userStopped trước
+                    if (userStopped) {
+                      debugLog('⏹️ User đã dừng, không retry');
+                      return;
+                    }
+                    
+                    const errorMsg = e instanceof Error ? e.message : String(e);
+                    
+                    // Kiểm tra nếu là lỗi user dừng
+                    if (errorMsg === 'User đã dừng' || errorMsg.includes('User đã dừng')) {
+                      debugLog('⏹️ User đã dừng, không retry');
+                      return;
+                    }
+                    
+                    // Kiểm tra nếu là lỗi trang chết, reload ngay lập tức
+                    if (e instanceof Error && e.isPageDead) {
+                      debugLog('⚠️ Phát hiện trang bị chết trong image flow, đang reload trang ngay lập tức...');
+                      await saveQueueState();
+                      await sleep(500);
+                      location.reload();
+                      return;
+                    }
+                    
+                    debugLog(`❌ Lỗi khi xử lý ảnh bắt đầu (retry ${imageFlowRetryCount + 1}/${RETRY_LIMITS.IMAGE_FLOW}): ${errorMsg}`);
+                    imageFlowRetryCount++;
+                    
+                    if (imageFlowRetryCount < RETRY_LIMITS.IMAGE_FLOW) {
+                      debugLog(`🔄 Retry luồng chọn ảnh lần ${imageFlowRetryCount}/${RETRY_LIMITS.IMAGE_FLOW} sau lỗi...`);
+                      await sleep(DELAYS.STABILIZE);
+                    }
+                  }
+                }
+                
+                if (!imageFlowSuccess && !userStopped) {
+                  debugLog('❌ Không thể tạo video từ ảnh sau ' + imageFlowRetryCount + ' lần thử.');
+                  debugLog('⏸️ Dừng queue tạm thời.');
+                  isRunning = false;
+                  scheduleAutoRestart('retry luồng chọn ảnh hết');
+                  return;
+                }
+                
+                if (userStopped) {
+                  debugLog('⏹️ Queue dừng theo yêu cầu người dùng.');
+                  isRunning = false;
+                  chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
+                  return;
+                }
+              } else {
+                // Không có ảnh: cần có video sẵn trong scene, dùng flow hiện tại
+                debugLog('⚠️ Queue đầu tiên không có ảnh, cần có video sẵn trong scene');
+                const hasVideo = hasVideoInScene();
+                if (!hasVideo) {
+                  throw 'Queue đầu tiên không có ảnh và không có video sẵn trong scene';
+                }
+                
+                // 1. Chọn mode Frame to Video
+                await ensureFrameToVideoMode();
+                
+                // 2. Dùng flow hiện tại: save frame → chọn asset → nhập prompt → generate
+                await scrollAssetListToEnd();
+                await saveFrameAsAsset();
+                await openImagePicker();
+                await selectLatestAsset();
+                await inputPrompt(prompt);
+                await clickGenerate();
+              }
+            } else {
+              // Queue tiếp theo (index > 0) hoặc prompt tiếp theo trong cùng queue
+              if (queueItem.imageBase64 && currentQueueIndex === 0 && promptIndex === 0) {
+                // Queue đầu tiên có ảnh, prompt đầu tiên - đã xử lý ở trên
+                // Không vào đây
+              } else if (queueItem.imageBase64 && promptIndex === 0) {
+                // Queue tiếp theo (index > 0) có ảnh, prompt đầu tiên: upload ảnh → crop → chọn asset → nhập prompt → generate (bỏ qua saveFrameAsAsset)
+                // Sử dụng image flow retry logic giống flow bình thường
+                let imageFlowSuccess = false;
+                let imageFlowRetryCount = 0;
+                
+                while (!imageFlowSuccess && imageFlowRetryCount < RETRY_LIMITS.IMAGE_FLOW && !userStopped) {
+                  try {
+                    if (imageFlowRetryCount === 0) {
+                      // Lần đầu tiên: Upload ảnh và crop
+                      debugLog('📷 Queue này có ảnh, đang upload trực tiếp (bỏ qua save frame)...');
+                      
+                      // 1. Chọn mode Frame to Video
+                      await ensureFrameToVideoMode();
+                      
+                      // 2. Upload ảnh
+                      await uploadImageFromFile(queueItem.imageBase64);
+                      
+                      // 3. Xử lý preview và crop
+                      const hasDialog = await handleImagePreviewAndCrop();
+                      
+                      if (hasDialog) {
+                        debugLog('📋 Có dialog Notice, cần chọn asset mới nhất');
+                        await openImagePicker();
+                        await selectLatestAsset();
+                      } else {
+                        debugLog('✅ Không có dialog, ảnh đã tự động được chọn');
+                      }
+                    } else {
+                      // Retry: Ảnh đã có sẵn, chỉ cần chọn lại asset đầu tiên
+                      debugLog(`🔄 Retry lần ${imageFlowRetryCount}/${RETRY_LIMITS.IMAGE_FLOW}: Chọn lại ảnh đã upload...`);
+                      
+                      // Check mode Frame to Video trước khi chọn ảnh (quan trọng khi retry)
+                      await ensureFrameToVideoMode();
+                      
+                      // Đóng menu frame nếu còn mở (từ lần generate trước)
+                      await closeMenuFrame();
+                      await sleep(DELAYS.LONG);
+                      
+                      // Mở image picker và chọn asset đầu tiên
+                      debugLog('📂 Đang mở image picker để chọn lại asset...');
+                      await openImagePicker();
+                      await sleep(DELAYS.LONG);
+                      
+                      debugLog('🎯 Đang chọn asset đầu tiên...');
+                      await selectLatestAsset();
+                      debugLog('✅ Đã chọn asset đầu tiên xong');
+                    }
+                    
+                    // Kiểm tra dấu "+" đã chuyển thành thumbnail chưa trước khi nhập prompt
+                    debugLog('⏳ Kiểm tra dấu "+" đã chuyển thành thumbnail...');
+                    let plusButtonGone = false;
+                    let checkTries = 0;
+                    const maxCheckTries = RETRY_LIMITS.THUMBNAIL_CHECK;
+                    
+                    while (isPlusButtonStillVisible() && checkTries < maxCheckTries) {
+                      // Check userStopped
+                      if (userStopped) {
+                        debugLog('⏹️ User đã dừng, thoát khỏi vòng chờ thumbnail');
+                        throw 'User đã dừng';
+                      }
+                      
+                      await sleep(DELAYS.NORMAL);
+                      checkTries++;
+                      
+                      // Kiểm tra lại xem thumbnail đã xuất hiện chưa
+                      if (isImageThumbnailVisible()) {
+                        plusButtonGone = true;
+                        break;
+                      }
+                      
+                      if (checkTries % 4 === 0) {
+                        debugLog(`  Đã chờ ${checkTries * 0.5}s, dấu "+" vẫn còn...`);
+                      }
+                    }
+                    
+                    // Kiểm tra lại một lần nữa sau khi chờ
+                    const finalThumbnailVisible = isImageThumbnailVisible();
+                    const finalPlusButtonVisible = isPlusButtonStillVisible();
+                    
+                    if (finalThumbnailVisible) {
+                      // Thumbnail đã xuất hiện → OK, không cần quan tâm nút "+" nữa
+                      debugLog('✅ Thumbnail đã xuất hiện, dấu "+" đã được thay thế');
+                    } else if (!finalPlusButtonVisible) {
+                      // Nút "+" đã biến mất → OK, có thể thumbnail đang load
+                      debugLog('✅ Dấu "+" đã biến mất, thumbnail có thể đã xuất hiện');
+                    } else {
+                      // Sau 10s mà dấu "+" vẫn còn và thumbnail chưa xuất hiện
+                      debugLog('⚠️ Dấu "+" chưa chuyển thành thumbnail sau 10s, tắt menu frame và retry...');
+                      await closeMenuFrame();
+                      throw 'Dấu "+" chưa chuyển thành thumbnail sau 10s';
+                    }
+                    
+                    // 4. Nhập prompt
+                    debugLog('⌨️ Đang nhập prompt...');
+                    await inputPrompt(prompt);
+                    
+                    // 5. Click generate
+                    debugLog('🚀 Đang click generate...');
+                    await clickGenerate();
+                    
+                    imageFlowSuccess = true;
+                  } catch (e) {
+                    // Check userStopped trước
+                    if (userStopped) {
+                      debugLog('⏹️ User đã dừng, không retry');
+                      return;
+                    }
+                    
+                    const errorMsg = e instanceof Error ? e.message : String(e);
+                    
+                    // Kiểm tra nếu là lỗi user dừng
+                    if (errorMsg === 'User đã dừng' || errorMsg.includes('User đã dừng')) {
+                      debugLog('⏹️ User đã dừng, không retry');
+                      return;
+                    }
+                    
+                    // Kiểm tra nếu là lỗi trang chết, reload ngay lập tức
+                    if (e instanceof Error && e.isPageDead) {
+                      debugLog('⚠️ Phát hiện trang bị chết trong image flow, đang reload trang ngay lập tức...');
+                      await saveQueueState();
+                      await sleep(500);
+                      location.reload();
+                      return;
+                    }
+                    
+                    debugLog(`❌ Lỗi khi xử lý ảnh (retry ${imageFlowRetryCount + 1}/${RETRY_LIMITS.IMAGE_FLOW}): ${errorMsg}`);
+                    imageFlowRetryCount++;
+                    
+                    if (imageFlowRetryCount < RETRY_LIMITS.IMAGE_FLOW) {
+                      debugLog(`🔄 Retry luồng chọn ảnh lần ${imageFlowRetryCount}/${RETRY_LIMITS.IMAGE_FLOW} sau lỗi...`);
+                      await sleep(DELAYS.STABILIZE);
+                    }
+                  }
+                }
+                
+                if (!imageFlowSuccess && !userStopped) {
+                  debugLog('❌ Không thể tạo video từ ảnh sau ' + imageFlowRetryCount + ' lần thử.');
+                  debugLog('⏸️ Dừng queue tạm thời.');
+                  isRunning = false;
+                  scheduleAutoRestart('retry luồng chọn ảnh hết');
+                  return;
+                }
+                
+                if (userStopped) {
+                  debugLog('⏹️ Queue dừng theo yêu cầu người dùng.');
+                  isRunning = false;
+                  chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
+                  return;
+                }
+              } else {
+                // Không có ảnh hoặc prompt tiếp theo: dùng flow hiện tại (saveFrameAsAsset → chọn asset → nhập prompt → generate)
+                debugLog('📸 Dùng frame từ video trước...');
+                
+                // 1. Chọn mode Frame to Video
+                await ensureFrameToVideoMode();
+                
+                // 2. Save frame → chọn asset → nhập prompt → generate
+                await scrollAssetListToEnd();
+                await saveFrameAsAsset();
+                await openImagePicker();
+                await selectLatestAsset();
+                await inputPrompt(prompt);
+                await clickGenerate();
+              }
+            }
+          
+          // Chờ asset mới xuất hiện (tối đa 3 phút)
+          debugLog('⏳ Đang chờ asset mới xuất hiện...');
+          let waitTries = 0;
+          let newAssetCount = getAssetCount();
+          const startTime = Date.now();
+          let progressWasRunning = isProgressRunning();
+          let progressDisappeared = false;
+          let noProgressStartTime = null;
+          
+          while (newAssetCount <= prevAssetCount && waitTries < TIMEOUTS.ASSET_WAIT / 1000) {
+            // Check userStopped trước mỗi lần lặp
+            if (userStopped) {
+              debugLog('⏹️ User đã dừng, thoát khỏi vòng chờ');
+              return;
+            }
+            
+            const progressRunning = isProgressRunning();
+            
+            // Phát hiện progress biến mất
+            if (progressWasRunning && !progressRunning && !progressDisappeared) {
+              // Check userStopped trước khi reload
+              if (userStopped) {
+                debugLog('⏹️ User đã dừng, không reload');
+                return;
+              }
+              
+              debugLog('⚠️ Progress % đã biến mất, kiểm tra số lượng video ngay...');
+              await sleep(500);
+              newAssetCount = getAssetCount();
+              
+              if (newAssetCount <= prevAssetCount) {
+                debugLog(`⚠️ Video render thất bại: số video không đổi (${prevAssetCount} → ${newAssetCount})`);
+                debugLog('🔄 Đang reload trang để retry queue này...');
+                await saveQueueState();
+                await sleep(500);
+                location.reload();
+                return;
+              } else {
+                debugLog(`✅ Video render thành công sau khi progress biến mất (${prevAssetCount} → ${newAssetCount})`);
+                break;
+              }
+              progressDisappeared = true;
+            }
+            
+            // Check: Nếu không có progress và số video không tăng sau 10s → reload ngay
+            if (!progressRunning) {
+              if (noProgressStartTime === null) {
+                noProgressStartTime = Date.now();
+              } else {
+                const noProgressDuration = Date.now() - noProgressStartTime;
+                if (noProgressDuration > 10000 && newAssetCount <= prevAssetCount) {
+                  // Check userStopped trước khi reload
+                  if (userStopped) {
+                    debugLog('⏹️ User đã dừng, không reload');
+                    return;
+                  }
+                  
+                  debugLog(`⚠️ Không có progress trong ${Math.floor(noProgressDuration/1000)}s và số video không tăng (${prevAssetCount} → ${newAssetCount})`);
+                  debugLog('🔄 Đang reload trang để retry queue này...');
+                  await saveQueueState();
+                  await sleep(500);
+                  location.reload();
+                  return;
+                }
+              }
+            } else {
+              noProgressStartTime = null;
+            }
+            
+            progressWasRunning = progressRunning;
+            
+            await sleep(DELAYS.LONG);
+            newAssetCount = getAssetCount();
+            waitTries++;
+            
+            const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+            if (waitTries % 20 === 0) {
+              debugLog(`  Đã chờ ${elapsedSeconds}s... (${prevAssetCount} → ${newAssetCount})`);
+            }
+          }
+          
+          if (newAssetCount > prevAssetCount) {
+            debugLog(`✅ Đã xong prompt ${promptIndex + 1}/${prompts.length} trong Queue #${currentQueueIndex + 1}, video đã được tạo (${prevAssetCount} → ${newAssetCount})`);
+            success = true;
+            // Tăng tổng số prompt đã xử lý
+            totalPromptsProcessed++;
+            // Cập nhật currentPromptIndexInQueue để tiếp tục từ prompt tiếp theo (nếu reload)
+            currentPromptIndexInQueue = promptIndex + 1;
+            
+            // Reload trang sau mỗi 4 prompt thành công (nếu còn prompt tiếp theo hoặc queue tiếp theo)
+            // Reload khi totalPromptsProcessed là 4, 8, 12... (bội số của 4)
+            const hasMorePrompts = promptIndex < prompts.length - 1 || currentQueueIndex < queueList.length - 1;
+            if (hasMorePrompts && totalPromptsProcessed % 4 === 0) {
+              debugLog(`🔄 Đã hoàn thành ${totalPromptsProcessed} prompt, đang lưu state và reload trang...`);
+              await saveQueueState();
+              await sleep(500); // Đợi một chút để đảm bảo state được lưu
+              location.reload();
+              return; // Dừng flow, sẽ tiếp tục sau khi reload
+            }
+            
+            // Chỉ tăng promptIndex, không tăng currentQueueIndex ở đây
+            // currentQueueIndex sẽ được tăng sau khi xử lý xong tất cả prompts trong queue item này
+            break; // Thoát khỏi retry loop
+          } else {
+            // Video render lỗi (timeout), reload trang ngay lập tức để retry
+            debugLog(`⚠️ Video chưa được tạo sau ${TIMEOUTS.ASSET_WAIT/60000} phút, video render có thể bị lỗi`);
+            debugLog('🔄 Đang reload trang để retry queue này...');
+            await saveQueueState();
+            await sleep(500);
+            location.reload();
+            return;
+          }
+        } catch (e) {
+          // Check userStopped trước
+          if (userStopped) {
+            debugLog('⏹️ User đã dừng, không retry');
+            return;
+          }
+          
+          const errorMsg = e instanceof Error ? e.message : String(e);
+          
+          // Kiểm tra nếu là lỗi user dừng
+          if (errorMsg === 'User đã dừng' || errorMsg.includes('User đã dừng')) {
+            debugLog('⏹️ User đã dừng, không retry');
+            return;
+          }
+          
+          // Kiểm tra nếu là lỗi trang chết, reload ngay lập tức
+          if (e instanceof Error && e.isPageDead) {
+            debugLog('⚠️ Phát hiện trang bị chết, đang reload trang ngay lập tức...');
+            await saveQueueState();
+            await sleep(500);
+            location.reload();
+            return;
+          }
+          
+          debugLog(`❌ Lỗi khi chạy Queue #${currentQueueIndex + 1} (retry ${retryCount + 1}/${RETRY_LIMITS.PROMPT}): ${errorMsg}`);
+          retryCount++;
+          
+          if (retryCount < RETRY_LIMITS.PROMPT) {
+            debugLog(`🔄 Retry lần ${retryCount}/${RETRY_LIMITS.PROMPT} sau lỗi...`);
+            await sleep(DELAYS.STABILIZE);
+          }
+        }
+      }
+      
+      if (!success && !userStopped) {
+        debugLog(`❌ Không thể tạo video cho prompt ${promptIndex + 1}/${prompts.length} trong Queue #${currentQueueIndex + 1} sau ${retryCount} lần thử.`);
+        debugLog('⏸️ Dừng queue tạm thời.');
+        isRunning = false;
+        scheduleAutoRestart('retry queue hết');
+        return;
+      }
+      
+      // Chờ một chút trước khi xử lý prompt tiếp theo (nếu có)
+      if (promptIndex < prompts.length - 1) {
+        await sleep(1000);
+      }
+    } catch (e) {
+      // Check userStopped trước
+      if (userStopped) {
+        debugLog('⏹️ User đã dừng, không schedule auto-restart');
+        isRunning = false;
+        return;
+      }
+      
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      
+      // Kiểm tra nếu là lỗi user dừng
+      if (errorMsg === 'User đã dừng' || errorMsg.includes('User đã dừng')) {
+        debugLog('⏹️ User đã dừng, không schedule auto-restart');
+        isRunning = false;
+        return;
+      }
+      
+      debugLog(`❌ Lỗi không mong đợi khi xử lý prompt ${promptIndex + 1}/${prompts.length} trong Queue #${currentQueueIndex + 1}: ${errorMsg}`);
+      isRunning = false;
+      scheduleAutoRestart('exception');
+      return;
+    }
+    } // End for loop prompts
+    
+    // Đã xử lý xong tất cả prompts trong queue item này
+    debugLog(`✅ Đã hoàn thành Queue #${currentQueueIndex + 1} với ${prompts.length} prompt(s)`);
+    currentQueueIndex++;
+    currentPromptIndexInQueue = 0; // Reset prompt index khi chuyển sang queue tiếp theo
+    sendQueueProgressUpdate();
+    
+    // Reload trang sau mỗi 4 queue thành công (nếu còn queue tiếp theo)
+    if (currentQueueIndex < queueList.length && currentQueueIndex % 4 === 0) {
+      debugLog(`🔄 Đã hoàn thành ${currentQueueIndex} queue, đang lưu state và reload trang...`);
+      await saveQueueState();
+      await sleep(500);
+      location.reload();
+      return;
+    }
+  }
+  
+  debugLog('🎉 Kết thúc queue.');
+  isRunning = false;
+  isQueueMode = false;
+  await clearQueueState();
   chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Idle' });
 }
 
@@ -1369,7 +2463,11 @@ async function saveFrameAsAsset() {
     await scrollAssetListToEnd();
 
     // Inject script nếu chưa có
-    if (!window.__sliderDragInjected) {
+    // Sử dụng tên biến khó đoán để tránh bị override
+    const INJECTION_MARKER = '__veo3_flow_injected_' + chrome.runtime.id.replace(/-/g, '_');
+    const FUNCTION_NAME = '__veo3_seekToEnd_' + chrome.runtime.id.replace(/-/g, '_');
+    
+    if (!window[INJECTION_MARKER]) {
       debugLog('🔧 Đang inject script vào main world...');
       
       // Tạo script tag và load từ extension
@@ -1381,18 +2479,29 @@ async function saveFrameAsAsset() {
       };
       (document.head || document.documentElement).appendChild(script);
       
-      window.__sliderDragInjected = true;
+      // Đánh dấu đã inject với tên khó đoán
+      window[INJECTION_MARKER] = true;
       debugLog('✓ Đã inject script main world.');
       
       // Chờ script được execute
       await sleep(DELAYS.SHORT * 2);
+      
+      // Kiểm tra tính toàn vẹn của function
+      if (typeof window.seekToEndOfVideo !== 'function') {
+        throw 'Function seekToEndOfVideo không tồn tại sau khi inject';
+      }
     }
 
     // Gửi message yêu cầu kéo slider
     debugLog('🎯 Gửi yêu cầu kéo slider đến cuối...');
     const result = await new Promise((resolve, reject) => {
       let resolved = false;
+      const currentOrigin = window.location.origin;
       function handler(e) {
+        // Validate origin để tránh XSS
+        if (e.origin !== currentOrigin) {
+          return; // Bỏ qua message từ origin khác
+        }
         if (e.data && e.data.type === 'SEEK_TO_END_VIDEO_RESULT') {
           if (resolved) return;
           resolved = true;
@@ -1403,7 +2512,7 @@ async function saveFrameAsAsset() {
       }
       window.addEventListener('message', handler);
       debugLog('📤 Gửi message SEEK_TO_END_VIDEO_REQUEST');
-      window.postMessage({ type: 'SEEK_TO_END_VIDEO_REQUEST' }, '*');
+      window.postMessage({ type: 'SEEK_TO_END_VIDEO_REQUEST' }, currentOrigin);
       setTimeout(() => {
         if (resolved) return;
         resolved = true;
@@ -1492,16 +2601,65 @@ async function openImagePicker() {
 }
 
 /**
+ * Validate base64 image data
+ * @param {string} imageBase64 - Base64 data URL
+ * @returns {boolean} true nếu hợp lệ
+ */
+function validateBase64Image(imageBase64) {
+  if (!imageBase64 || typeof imageBase64 !== 'string') {
+    return false;
+  }
+  
+  // Kiểm tra format data URL
+  if (!imageBase64.startsWith('data:image/')) {
+    return false;
+  }
+  
+  // Kiểm tra có base64 data không
+  const parts = imageBase64.split(',');
+  if (parts.length !== 2 || !parts[1]) {
+    return false;
+  }
+  
+  // Kiểm tra mime type hợp lệ
+  const mimeMatch = imageBase64.match(/data:image\/([^;]+);/);
+  if (!mimeMatch) {
+    return false;
+  }
+  
+  const validTypes = ['jpeg', 'jpg', 'png', 'gif', 'webp'];
+  const imageType = mimeMatch[1].toLowerCase();
+  if (!validTypes.includes(imageType)) {
+    return false;
+  }
+  
+  // Kiểm tra kích thước base64 (ước tính max 15MB khi decode)
+  const base64Data = parts[1];
+  const estimatedSize = (base64Data.length * 3) / 4; // Base64 encoding overhead
+  const MAX_SIZE = 15 * 1024 * 1024; // 15MB
+  if (estimatedSize > MAX_SIZE) {
+    return false;
+  }
+  
+  return true;
+}
+
+/**
  * Upload ảnh từ base64 string
  * @param {string} imageBase64 - Base64 data URL của ảnh
  * @returns {Promise<void>}
- * @throws {Error} Nếu không tìm thấy textarea hoặc nút upload
+ * @throws {Error} Nếu không tìm thấy textarea hoặc nút upload, hoặc base64 không hợp lệ
  */
 async function uploadImageFromFile(imageBase64) {
   // Kiểm tra tab Scenebuilder
   if (!isScenebuilderTab()) {
     updateScenebuilderMask(true);
     throw 'Không phải tab Scenebuilder';
+  }
+  
+  // Validate base64 trước khi sử dụng
+  if (!validateBase64Image(imageBase64)) {
+    throw 'Base64 image không hợp lệ (format sai, quá lớn, hoặc không phải ảnh)';
   }
   
   debugLog('📤 Đang upload ảnh...');
@@ -1634,15 +2792,60 @@ async function handleImagePreviewAndCrop() {
     const maxTries = RETRY_LIMITS.CROP_SAVE_BUTTON;
     
     while (!cropAndSaveButton && tries < maxTries) {
-      // Tìm nút "Crop and Save" - ưu tiên aria-label, sau đó text matching đa ngôn ngữ
-      const allButtons = Array.from(document.querySelectorAll('button'));
+      // Tìm dialog/modal crop (có thể là role="dialog" hoặc element chứa title "Cắt thành phần")
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]'));
+      let cropDialog = null;
       
-      // Thử tìm bằng aria-label trước (không phụ thuộc ngôn ngữ)
-      cropAndSaveButton = findButtonByAttributes(allButtons, ['crop', 'save'], null);
+      // Tìm dialog có chứa text "Cắt thành phần" hoặc "Crop"
+      for (const dialog of dialogs) {
+        const dialogText = dialog.textContent || '';
+        // Kiểm tra có phải dialog crop không (có thể có text về crop hoặc có button nhiều)
+        const allDialogButtons = Array.from(dialog.querySelectorAll('button'));
+        if (allDialogButtons.length >= 4) { // Dialog crop thường có ít nhất 4 nút: Hủy, Đặt lại, Ngang, Cắt và lưu
+          cropDialog = dialog;
+          break;
+        }
+      }
       
-      // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
+      // Nếu không tìm thấy bằng cách trên, thử tìm dialog visible đầu tiên
+      if (!cropDialog && dialogs.length > 0) {
+        for (const dialog of dialogs) {
+          const style = window.getComputedStyle(dialog);
+          if (style.display !== 'none' && dialog.offsetParent !== null) {
+            const allDialogButtons = Array.from(dialog.querySelectorAll('button'));
+            if (allDialogButtons.length >= 3) { // Có ít nhất 3 button
+              cropDialog = dialog;
+              break;
+            }
+          }
+        }
+      }
+      
+      if (cropDialog) {
+        // Tìm tất cả button trong dialog crop
+        const allDialogButtons = Array.from(cropDialog.querySelectorAll('button')).filter(btn => {
+          const style = window.getComputedStyle(btn);
+          return style.display !== 'none' && btn.offsetParent !== null;
+        });
+        
+        if (allDialogButtons.length >= 4) {
+          // Nút "Crop and Save" (Cắt và lưu) là nút cuối cùng trong danh sách
+          // Theo ảnh: Hủy, Đặt lại, Ngang, Cắt và lưu (nút cuối)
+          cropAndSaveButton = allDialogButtons[allDialogButtons.length - 1];
+          debugLog(`✓ Tìm thấy ${allDialogButtons.length} nút trong dialog crop, chọn nút cuối cùng`);
+        }
+      }
+      
+      // Fallback: thử tìm bằng text/attribute nếu không tìm được bằng vị trí
       if (!cropAndSaveButton) {
-        cropAndSaveButton = findButtonByText(allButtons, 'CROP_AND_SAVE', { requireAll: true });
+        const allButtons = Array.from(document.querySelectorAll('button'));
+        // Thử tìm bằng aria-label trước (không phụ thuộc ngôn ngữ)
+        cropAndSaveButton = findButtonByAttributes(allButtons, ['crop', 'save'], null);
+        
+        // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
+        if (!cropAndSaveButton) {
+          cropAndSaveButton = findButtonByText(allButtons, 'CROP_AND_SAVE', { requireAll: true });
+        }
       }
       
       if (cropAndSaveButton) {
@@ -1779,56 +2982,68 @@ async function ensureFrameToVideoMode() {
   debugLog('🔄 Đang check mode Frame to Video...');
   
   try {
-    // Tìm button mode selector (combobox) - ưu tiên aria-label, sau đó text matching
+    // Tìm button mode selector (combobox) - chỉ có 1 combobox trên màn hình
     const allModeButtons = Array.from(document.querySelectorAll('button[role="combobox"]'));
     
-    // Thử tìm bằng aria-label trước
-    let modeButton = findButtonByAttributes(allModeButtons, ['video', 'frame'], null);
-    
-    // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
-    if (!modeButton) {
-      modeButton = findButtonByText(allModeButtons, 'FRAME_TO_VIDEO') || 
-                   findButtonByText(allModeButtons, 'TEXT_TO_VIDEO');
-    }
-    
-    if (!modeButton) {
+    if (allModeButtons.length === 0) {
       debugLog('⚠️ Không tìm thấy button chọn mode');
       return; // Có thể đã ở đúng mode hoặc UI khác
     }
     
-    const currentMode = modeButton.textContent.trim();
+    // Lấy button đầu tiên (vì chỉ có 1 combobox)
+    const modeButton = allModeButtons[0];
     
-    // Check xem có phải "Frame to Video" không - dùng text matching đa ngôn ngữ
-    if (matchesText(currentMode, 'FRAME_TO_VIDEO')) {
-      debugLog('✅ Đã ở mode Frame to Video');
+    // Kiểm tra innerText/textContent có chứa "arrow_drop_down" để đảm bảo đúng element
+    const buttonText = modeButton.innerText || modeButton.textContent || '';
+    if (!buttonText.toLowerCase().includes('arrow_drop_down')) {
+      debugLog('⚠️ Button không phải combobox (không có arrow_drop_down)');
       return;
     }
+    
+    // Lưu text hiện tại của combobox để so sánh
+    const currentModeText = modeButton.innerText || modeButton.textContent || '';
     
     // Click để mở dropdown
     debugLog('🔄 Đang click để mở dropdown mode...');
     modeButton.click();
     await sleep(DELAYS.NORMAL);
     
-    // Tìm menu item "Frame to Video" - ưu tiên aria-label, sau đó text matching
+    // Tìm menu items
     const menuItems = document.querySelectorAll('[role="menuitem"], [role="option"]');
     const menuItemsArray = Array.from(menuItems);
     
-    // Thử tìm bằng aria-label trước
-    let frameToVideoItem = findButtonByAttributes(menuItemsArray, ['frame', 'video'], null);
-    
-    // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
-    if (!frameToVideoItem) {
-      frameToVideoItem = findButtonByText(menuItemsArray, 'FRAME_TO_VIDEO');
+    if (menuItemsArray.length === 0) {
+      debugLog('⚠️ Không tìm thấy menu items sau khi mở dropdown');
+      return;
     }
     
-    if (frameToVideoItem) {
-      debugLog('✓ Tìm thấy menu item Frame to Video, đang click...');
-      frameToVideoItem.click();
-      await sleep(DELAYS.LONG);
-      debugLog('✅ Đã chọn mode Frame to Video');
-    } else {
-      debugLog('⚠️ Không tìm thấy menu item Frame to Video, có thể đã ở đúng mode');
+    // Lấy item thứ 2 (index 1)
+    if (menuItemsArray.length < 2) {
+      debugLog('⚠️ Không có đủ menu items (cần ít nhất 2 items)');
+      return;
     }
+    
+    const frameToVideoItem = menuItemsArray[1]; // Item thứ 2 (index 1)
+    const frameToVideoText = frameToVideoItem.innerText || frameToVideoItem.textContent || '';
+    
+    // So sánh text của item thứ 2 với text hiện tại của combobox để kiểm tra đã ở đúng mode chưa
+    // Loại bỏ ký tự xuống dòng và "arrow_drop_down" để so sánh
+    const normalizedCurrentText = currentModeText.replace(/\n/g, ' ').replace(/arrow_drop_down/gi, '').trim();
+    const normalizedFrameToVideoText = frameToVideoText.trim();
+    
+    if (normalizedCurrentText === normalizedFrameToVideoText) {
+      debugLog('✅ Đã ở mode Frame to Video');
+      // Đóng dropdown bằng cách click ra ngoài hoặc ESC
+      document.body.click();
+      await sleep(DELAYS.SHORT);
+      return;
+    }
+    
+    // Chưa đúng mode, click vào item thứ 2
+    debugLog('✓ Đang click vào menu item thứ 2 (Frame to Video)...');
+    frameToVideoItem.click();
+    await sleep(DELAYS.LONG);
+    debugLog('✅ Đã chọn mode Frame to Video');
     
   } catch (e) {
     debugLog('⚠️ ensureFrameToVideoMode lỗi: ' + e);
@@ -2096,13 +3311,18 @@ async function selectLatestAsset() {
  * STEP 5: Nhập prompt vào textarea
  * @param {string} prompt - Prompt text để nhập
  * @returns {Promise<void>}
- * @throws {Error} Nếu không tìm thấy textarea
+ * @throws {Error} Nếu không tìm thấy textarea hoặc prompt không hợp lệ
  */
 async function inputPrompt(prompt) {
   // Kiểm tra tab Scenebuilder
   if (!isScenebuilderTab()) {
     updateScenebuilderMask(true);
     throw 'Không phải tab Scenebuilder';
+  }
+  
+  // Validate prompt trước khi sử dụng
+  if (!validatePrompt(prompt)) {
+    throw 'Prompt không hợp lệ (quá dài hoặc chứa ký tự không cho phép)';
   }
   
   debugLog('⌨️ inputPrompt: Nhập prompt...');
@@ -2120,7 +3340,7 @@ async function inputPrompt(prompt) {
     
     await sleep(DELAYS.SHORT);
     
-    // Nhập prompt mới
+    // Nhập prompt mới (textarea.value tự động escape HTML)
     textarea.value = prompt;
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
     
@@ -2293,9 +3513,11 @@ async function autoRestoreAndContinue() {
     await sleep(5000);
     
     // Kiểm tra xem có đang ở tab Scenebuilder không (sau khi DOM đã load xong)
-    // Chỉ check nếu có state để restore, nếu không có state thì không cần check
+    // Restore queue state và normal flow state
+    const hasQueueState = await restoreQueueState();
     const hasState = await restoreFlowState();
-    if (hasState) {
+    
+    if (hasQueueState || hasState) {
       // Có state, cần check xem có phải Scenebuilder tab không
       if (!isScenebuilderTab()) {
         updateScenebuilderMask(true);
@@ -2305,7 +3527,8 @@ async function autoRestoreAndContinue() {
           console.log('⚠️ Không phải tab Scenebuilder, không thể restore state');
         }
         // Xóa state vì không thể restore
-        await clearFlowState();
+        if (hasQueueState) await clearQueueState();
+        if (hasState) await clearFlowState();
         return;
       }
       
@@ -2314,7 +3537,27 @@ async function autoRestoreAndContinue() {
     }
     
     // Restore state và tiếp tục flow
-    if (hasState && isRunning && currentPromptIndex < prompts.length && !userStopped) {
+    if (hasQueueState && isQueueMode && isRunning && currentQueueIndex < queueList.length && !userStopped) {
+      try {
+        debugLog(`🔄 Tiếp tục queue từ queue #${currentQueueIndex + 1} sau reload...`);
+      } catch (e) {
+        console.log(`🔄 Tiếp tục queue từ queue #${currentQueueIndex + 1} sau reload...`);
+      }
+      
+      try {
+        chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Queue Running' });
+      } catch (e) {
+        console.error('Lỗi khi gửi FLOW_STATUS: ', e);
+      }
+      
+      try {
+        sendQueueProgressUpdate();
+      } catch (e) {
+        console.error('Lỗi khi gửi queue progress update: ', e);
+      }
+      
+      runQueueFlow();
+    } else if (hasState && !isQueueMode && isRunning && currentPromptIndex < prompts.length && !userStopped) {
       try {
         debugLog(`🔄 Tiếp tục flow từ prompt #${currentPromptIndex + 1} sau reload...`);
       } catch (e) {
@@ -2334,6 +3577,14 @@ async function autoRestoreAndContinue() {
       }
       
       runFlow();
+    } else if (hasQueueState) {
+      // Có queue state nhưng queue đã hoàn thành hoặc đã dừng
+      try {
+        debugLog('ℹ️ Có queue state nhưng queue đã hoàn thành hoặc đã dừng, xóa state...');
+      } catch (e) {
+        console.log('ℹ️ Có queue state nhưng queue đã hoàn thành hoặc đã dừng, xóa state...');
+      }
+      await clearQueueState();
     } else if (hasState) {
       // Có state nhưng flow đã hoàn thành hoặc đã dừng
       try {
