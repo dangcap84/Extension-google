@@ -14,12 +14,16 @@ let selectedImageBase64 = null;
 // Queue Management Elements
 const queueImageInput = document.getElementById('queue-image-input');
 const queueImagePreview = document.getElementById('queue-image-preview');
+const queueImagePreviewContainer = document.getElementById('queue-image-preview-container');
+const queueImageRemoveBtn = document.getElementById('queue-image-remove-btn');
 const queuePromptInput = document.getElementById('queue-prompt-input');
 const addQueueBtn = document.getElementById('add-queue-btn');
 const queueListEl = document.getElementById('queue-list');
 const queueCountEl = document.getElementById('queue-count');
 const startQueueBtn = document.getElementById('start-queue-btn');
 const stopQueueBtn = document.getElementById('stop-queue-btn');
+const continueQueueBtn = document.getElementById('continue-queue-btn');
+const restartQueueBtn = document.getElementById('restart-queue-btn');
 const clearQueueBtn = document.getElementById('clear-queue-btn');
 const queueProgressEl = document.getElementById('queue-progress');
 const queueProgressTextEl = document.getElementById('queue-progress-text');
@@ -34,6 +38,8 @@ let queueImageBase64 = null;
 let nextQueueId = 1;
 let currentMode = 'normal'; // 'normal' or 'queue'
 let modeListenersAttached = false; // Flag để track việc đã attach event listeners
+let editingQueueId = null; // ID của queue đang được edit
+let editingQueueOriginalOrder = null; // Order ban đầu của queue đang được edit
 
 // Format timestamp
 function getTimestamp() {
@@ -349,19 +355,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (startQueueBtn) {
         startQueueBtn.style.display = 'none';
       }
+      if (continueQueueBtn) {
+        continueQueueBtn.style.display = 'none';
+      }
+      if (restartQueueBtn) {
+        restartQueueBtn.style.display = 'none';
+      }
       if (queueProgressEl) {
         queueProgressEl.style.display = 'block';
       }
     } else {
       // Stopped hoặc Idle
-      if (stopQueueBtn) {
-        stopQueueBtn.style.display = 'none';
-      }
-      if (startQueueBtn) {
-        startQueueBtn.style.display = 'inline-block';
-      }
-      if (queueProgressEl && (status === 'Stopped' || status === 'Idle')) {
-        queueProgressEl.style.display = 'none';
+      if (status === 'Stopped') {
+        // Khi stop, hiển thị Continue và Restart
+        if (stopQueueBtn) {
+          stopQueueBtn.style.display = 'none';
+        }
+        if (startQueueBtn) {
+          startQueueBtn.style.display = 'none';
+        }
+        if (continueQueueBtn) {
+          continueQueueBtn.style.display = 'inline-block';
+        }
+        if (restartQueueBtn) {
+          restartQueueBtn.style.display = 'inline-block';
+        }
+        if (queueProgressEl) {
+          queueProgressEl.style.display = 'block';
+        }
+      } else {
+        // Idle - hiển thị Start Queue
+        if (stopQueueBtn) {
+          stopQueueBtn.style.display = 'none';
+        }
+        if (startQueueBtn) {
+          startQueueBtn.style.display = 'inline-block';
+        }
+        if (continueQueueBtn) {
+          continueQueueBtn.style.display = 'none';
+        }
+        if (restartQueueBtn) {
+          restartQueueBtn.style.display = 'none';
+        }
+        if (queueProgressEl) {
+          queueProgressEl.style.display = 'none';
+        }
       }
     }
   }
@@ -432,6 +470,69 @@ function addQueue() {
     }
   }
   
+  // Nếu đang edit, update queue tại vị trí ban đầu
+  if (editingQueueId !== null && editingQueueOriginalOrder !== null) {
+    const existingIndex = queueList.findIndex(q => q.id === editingQueueId);
+    if (existingIndex !== -1) {
+      // Cập nhật queue hiện có
+      const queueItem = queueList[existingIndex];
+      queueItem.imageBase64 = queueImageBase64;
+      queueItem.prompts = prompts;
+      
+      // Giữ nguyên order ban đầu nếu queue vẫn còn trong list
+      // Nếu order ban đầu đã bị thay đổi, giữ order hiện tại
+      if (editingQueueOriginalOrder < queueList.length) {
+        // Di chuyển queue về vị trí ban đầu
+        queueList.splice(existingIndex, 1);
+        queueList.splice(editingQueueOriginalOrder, 0, queueItem);
+        // Cập nhật lại order cho tất cả queue
+        queueList.forEach((q, i) => {
+          q.order = i;
+        });
+      }
+      
+      saveQueueList();
+      renderQueueList();
+      updateQueueCount();
+      
+      // Clear edit state
+      editingQueueId = null;
+      editingQueueOriginalOrder = null;
+      addQueueBtn.textContent = '➕ Add Queue';
+      
+      // Clear input
+      queuePromptInput.value = '';
+      queueImageInput.value = '';
+      queueImageBase64 = null;
+      queueImagePreview.src = '';
+      if (queueImagePreviewContainer) {
+        queueImagePreviewContainer.style.display = 'none';
+      }
+      
+      log(`✓ Đã cập nhật queue tại vị trí ${editingQueueOriginalOrder + 1} với ${prompts.length} prompt(s)`);
+      
+      // Nếu queue đang chạy, lưu state mới (không restart)
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs && tabs[0] && tabs[0].id) {
+          chrome.tabs.sendMessage(tabs[0].id, {
+            type: 'UPDATE_QUEUE_LIST',
+            queueList: queueList.sort((a, b) => a.order - b.order).map(q => ({
+              imageBase64: q.imageBase64 || null,
+              prompts: Array.isArray(q.prompts) ? q.prompts : (q.prompt ? [q.prompt] : [])
+            }))
+          }, (response) => {
+            if (response && response.ok) {
+              log('✓ Đã cập nhật queue list trong content script');
+            }
+          });
+        }
+      });
+      
+      return;
+    }
+  }
+  
+  // Thêm queue mới
   const queueItem = {
     id: generateQueueId(),
     imageBase64: queueImageBase64,
@@ -444,12 +545,19 @@ function addQueue() {
   renderQueueList();
   updateQueueCount();
   
+  // Clear edit state
+  editingQueueId = null;
+  editingQueueOriginalOrder = null;
+  addQueueBtn.textContent = '➕ Add Queue';
+  
   // Clear input
   queuePromptInput.value = '';
   queueImageInput.value = '';
   queueImageBase64 = null;
   queueImagePreview.src = '';
-  queueImagePreview.classList.remove('visible');
+  if (queueImagePreviewContainer) {
+    queueImagePreviewContainer.style.display = 'none';
+  }
   
   log(`✓ Đã thêm queue #${queueList.length} với ${prompts.length} prompt(s)`);
 }
@@ -627,24 +735,34 @@ function editQueueItem(queueId) {
   const queueItem = queueList.find(q => q.id === queueId);
   if (!queueItem) return;
   
+  // Lưu queueId và order ban đầu
+  editingQueueId = queueId;
+  editingQueueOriginalOrder = queueItem.order;
+  
   // Fill input fields - backward compatible với prompt string hoặc prompts array
   const prompts = Array.isArray(queueItem.prompts) ? queueItem.prompts : (queueItem.prompt ? [queueItem.prompt] : []);
   queuePromptInput.value = prompts.join('\n');
+  
+  // Hiển thị ảnh nếu có
   if (queueItem.imageBase64) {
     queueImageBase64 = queueItem.imageBase64;
     queueImagePreview.src = queueImageBase64;
-    queueImagePreview.classList.add('visible');
+    if (queueImagePreviewContainer) {
+      queueImagePreviewContainer.style.display = 'block';
+    }
   } else {
     queueImageBase64 = null;
     queueImagePreview.src = '';
-    queueImagePreview.classList.remove('visible');
+    if (queueImagePreviewContainer) {
+      queueImagePreviewContainer.style.display = 'none';
+    }
   }
-  queueImageInput.value = ''; // Clear file input
+  queueImageInput.value = ''; // Clear file input nhưng giữ ảnh trong preview
   
-  // Remove from list
-  removeQueue(queueId);
+  // Đổi text nút thành "Save Queue"
+  addQueueBtn.textContent = '💾 Save Queue';
   
-  log(`📝 Đang chỉnh sửa queue, nhập lại và ấn Add Queue để cập nhật`);
+  log(`📝 Đang chỉnh sửa queue, nhập lại và ấn Save Queue để cập nhật`);
 }
 
 // Update queue count
@@ -669,7 +787,9 @@ function clearAllQueues() {
 queueImageInput.addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) {
-    queueImagePreview.classList.remove('visible');
+    if (queueImagePreviewContainer) {
+      queueImagePreviewContainer.style.display = 'none';
+    }
     queueImageBase64 = null;
     return;
   }
@@ -678,7 +798,9 @@ queueImageInput.addEventListener('change', (e) => {
   if (!validation.valid) {
     log('⚠️ ' + validation.error);
     queueImageInput.value = '';
-    queueImagePreview.classList.remove('visible');
+    if (queueImagePreviewContainer) {
+      queueImagePreviewContainer.style.display = 'none';
+    }
     queueImageBase64 = null;
     return;
   }
@@ -690,21 +812,40 @@ queueImageInput.addEventListener('change', (e) => {
     if (!base64 || typeof base64 !== 'string' || !base64.startsWith('data:image/')) {
       log('❌ Lỗi: Base64 không hợp lệ');
       queueImageBase64 = null;
-      queueImagePreview.classList.remove('visible');
+      if (queueImagePreviewContainer) {
+        queueImagePreviewContainer.style.display = 'none';
+      }
       return;
     }
     
     queueImageBase64 = base64;
     queueImagePreview.src = queueImageBase64;
-    queueImagePreview.classList.add('visible');
+    if (queueImagePreviewContainer) {
+      queueImagePreviewContainer.style.display = 'block';
+    }
   };
   reader.onerror = () => {
     log('❌ Lỗi đọc file ảnh');
     queueImageBase64 = null;
-    queueImagePreview.classList.remove('visible');
+    if (queueImagePreviewContainer) {
+      queueImagePreviewContainer.style.display = 'none';
+    }
   };
   reader.readAsDataURL(file);
 });
+
+// Remove image button
+if (queueImageRemoveBtn) {
+  queueImageRemoveBtn.addEventListener('click', () => {
+    queueImageBase64 = null;
+    queueImagePreview.src = '';
+    queueImageInput.value = '';
+    if (queueImagePreviewContainer) {
+      queueImagePreviewContainer.style.display = 'none';
+    }
+    log('✓ Đã xóa ảnh');
+  });
+}
 
 // Add Queue button
 addQueueBtn.addEventListener('click', addQueue);
@@ -723,20 +864,206 @@ stopQueueBtn.addEventListener('click', async () => {
     await chrome.tabs.sendMessage(tab.id, { type: 'STOP_FLOW' });
     log('⏹️ Đã gửi lệnh dừng queue');
     
-    // Ẩn nút Stop, hiển thị nút Start
+    // Ẩn nút Stop, hiển thị nút Continue và Restart
     if (stopQueueBtn) {
       stopQueueBtn.style.display = 'none';
     }
     if (startQueueBtn) {
-      startQueueBtn.style.display = 'inline-block';
-      startQueueBtn.disabled = false;
+      startQueueBtn.style.display = 'none';
+    }
+    if (continueQueueBtn) {
+      continueQueueBtn.style.display = 'inline-block';
+      continueQueueBtn.disabled = false;
+    }
+    if (restartQueueBtn) {
+      restartQueueBtn.style.display = 'inline-block';
+      restartQueueBtn.disabled = false;
     }
     if (queueProgressEl) {
-      queueProgressEl.style.display = 'none';
+      queueProgressEl.style.display = 'block'; // Giữ hiển thị progress khi dừng
     }
   } catch (e) {
     log('❌ Lỗi khi dừng queue: ' + e);
   }
+});
+
+// Continue Queue button
+continueQueueBtn.addEventListener('click', async () => {
+  if (queueList.length === 0) {
+    log('⚠️ Chưa có queue nào để tiếp tục');
+    return;
+  }
+  
+  // Disable button và hiển thị nút Stop
+  continueQueueBtn.disabled = true;
+  restartQueueBtn.disabled = true;
+  if (stopQueueBtn) {
+    stopQueueBtn.style.display = 'inline-block';
+  }
+  if (continueQueueBtn) {
+    continueQueueBtn.style.display = 'none';
+  }
+  if (restartQueueBtn) {
+    restartQueueBtn.style.display = 'none';
+  }
+  
+  // Get current tab
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) {
+    log('❌ Không tìm thấy tab');
+    continueQueueBtn.disabled = false;
+    restartQueueBtn.disabled = false;
+    return;
+  }
+  
+  // Check URL
+  if (!tab.url || !tab.url.includes('labs.google')) {
+    log('❌ Vui lòng mở trang Google Flow trước!');
+    continueQueueBtn.disabled = false;
+    restartQueueBtn.disabled = false;
+    return;
+  }
+  
+  log('▶️ Đang tiếp tục queue từ vị trí hiện tại...');
+  
+  // Send CONTINUE_QUEUE message
+  chrome.tabs.sendMessage(
+    tab.id,
+    { type: 'CONTINUE_QUEUE' },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        log('❌ Lỗi: ' + chrome.runtime.lastError.message);
+        continueQueueBtn.disabled = false;
+        restartQueueBtn.disabled = false;
+        return;
+      }
+      
+      if (response && response.ok) {
+        log('✓ Đã tiếp tục queue');
+        updateStatus('Queue Running');
+      } else {
+        log('⚠️ Không thể tiếp tục queue: ' + (response?.error || 'Unknown error'));
+        continueQueueBtn.disabled = false;
+        restartQueueBtn.disabled = false;
+      }
+    }
+  );
+});
+
+// Restart Queue button
+restartQueueBtn.addEventListener('click', async () => {
+  if (queueList.length === 0) {
+    log('⚠️ Chưa có queue nào để restart');
+    return;
+  }
+  
+  if (!confirm('Bạn có chắc muốn restart queue từ đầu? Queue hiện tại sẽ bắt đầu lại từ queue đầu tiên.')) {
+    return;
+  }
+  
+  // Disable button và hiển thị nút Stop
+  continueQueueBtn.disabled = true;
+  restartQueueBtn.disabled = true;
+  if (stopQueueBtn) {
+    stopQueueBtn.style.display = 'inline-block';
+  }
+  if (continueQueueBtn) {
+    continueQueueBtn.style.display = 'none';
+  }
+  if (restartQueueBtn) {
+    restartQueueBtn.style.display = 'none';
+  }
+  
+  // Get current tab
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) {
+    log('❌ Không tìm thấy tab');
+    continueQueueBtn.disabled = false;
+    restartQueueBtn.disabled = false;
+    return;
+  }
+  
+  // Check URL
+  if (!tab.url || !tab.url.includes('labs.google')) {
+    log('❌ Vui lòng mở trang Google Flow trước!');
+    continueQueueBtn.disabled = false;
+    restartQueueBtn.disabled = false;
+    return;
+  }
+  
+  // Check Scenebuilder tab
+  log('🔍 Đang kiểm tra tab Scenebuilder...');
+  chrome.tabs.sendMessage(
+    tab.id,
+    { type: 'CHECK_SCENEBUILDER_TAB' },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        log('❌ Lỗi: ' + chrome.runtime.lastError.message);
+        log('💡 Thử refresh trang Google Flow');
+        continueQueueBtn.disabled = false;
+        restartQueueBtn.disabled = false;
+        return;
+      }
+      
+      if (response && response.ok) {
+        if (!response.isScenebuilder) {
+          log('❌ Không phải tab Scenebuilder! Vui lòng mở tab Scenebuilder để sử dụng extension.');
+          showScenebuilderMask(true);
+          continueQueueBtn.disabled = false;
+          restartQueueBtn.disabled = false;
+          return;
+        }
+        
+        showScenebuilderMask(false);
+        log('✅ Đã xác nhận tab Scenebuilder');
+        
+        // Sort by order
+        const sortedQueue = [...queueList].sort((a, b) => a.order - b.order);
+        
+        // Prepare queue list for content script
+        const queueListForContent = sortedQueue.map(q => {
+          const prompts = Array.isArray(q.prompts) ? q.prompts : (q.prompt ? [q.prompt] : []);
+          return {
+            imageBase64: q.imageBase64 || null,
+            prompts: prompts
+          };
+        });
+        
+        log(`🔄 Restart queue với ${queueListForContent.length} queue...`);
+        
+        // Send RESTART_QUEUE message
+        chrome.tabs.sendMessage(
+          tab.id,
+          {
+            type: 'RESTART_QUEUE',
+            queueList: queueListForContent
+          },
+          (response) => {
+            if (chrome.runtime.lastError) {
+              log('❌ Lỗi: ' + chrome.runtime.lastError.message);
+              log('💡 Thử refresh trang Google Flow');
+              continueQueueBtn.disabled = false;
+              restartQueueBtn.disabled = false;
+              return;
+            }
+            
+            if (response && response.ok) {
+              log('✓ Đã restart queue');
+              updateStatus('Queue Running');
+            } else {
+              log('⚠️ Content script không phản hồi đúng: ' + (response?.error || 'Unknown error'));
+              continueQueueBtn.disabled = false;
+              restartQueueBtn.disabled = false;
+            }
+          }
+        );
+      } else {
+        log('⚠️ Không thể kiểm tra tab Scenebuilder');
+        continueQueueBtn.disabled = false;
+        restartQueueBtn.disabled = false;
+      }
+    }
+  );
 });
 
 // Start Queue button

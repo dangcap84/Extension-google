@@ -329,7 +329,10 @@
     <div class="queue-input-section">
       <div class="label" style="margin-bottom: 4px;">Ảnh (tùy chọn)</div>
       <input type="file" id="queue-image-input" accept="image/*">
-      <img id="queue-image-preview" class="image-preview" alt="Preview" style="width: 100%; max-height: 100px; object-fit: contain; border-radius: 4px; border: 1px solid #1e293b; display: none;">
+      <div id="queue-image-preview-container" style="position: relative; display: none;">
+        <img id="queue-image-preview" class="image-preview" alt="Preview" style="width: 100%; max-height: 100px; object-fit: contain; border-radius: 4px; border: 1px solid #1e293b;">
+        <button id="queue-image-remove-btn" style="position: absolute; top: 4px; right: 4px; background: #ef4444; color: white; border: none; border-radius: 50%; width: 24px; height: 24px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 4px rgba(0,0,0,0.3);" title="Xóa ảnh">×</button>
+      </div>
       <div class="label" style="margin-bottom: 4px; margin-top: 8px;">Prompts (mỗi dòng 1 prompt)</div>
       <textarea id="queue-prompt-input" placeholder="Nhập prompt cho queue này...&#10;Mỗi dòng = 1 prompt" style="height: 80px; font-size: 12px;"></textarea>
       <button id="add-queue-btn" class="primary small">➕ Add Queue</button>
@@ -339,6 +342,8 @@
     <div class="queue-controls">
       <button id="start-queue-btn" class="primary">▶️ Start Queue</button>
       <button id="stop-queue-btn" class="danger" style="display: none;">⏹️ Stop Queue</button>
+      <button id="continue-queue-btn" class="primary" style="display: none;">▶️ Continue Queue</button>
+      <button id="restart-queue-btn" class="secondary" style="display: none;">🔄 Restart Queue</button>
       <button id="clear-queue-btn" class="secondary">🗑️ Clear All</button>
     </div>
     <div id="queue-progress" style="margin-top: 8px; padding: 8px; background: #1e293b; border-radius: 4px; font-size: 12px; color: #e2e8f0; display: none;">
