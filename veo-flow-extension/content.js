@@ -210,6 +210,12 @@ const TEXT_MAPPINGS = {
   }
 };
 
+// IndexedDB constants for queue state
+const QUEUE_DB_NAME = 'veoQueueDB';
+const QUEUE_DB_VERSION = 1;
+const QUEUE_STORE_NAME = 'queueState';
+let queueDB = null; // IndexedDB instance
+
 /**
  * Auto-detect language from page
  * @returns {string} Language code ('en' or 'ja')
@@ -486,20 +492,64 @@ async function clearFlowState() {
 }
 
 /**
- * Lưu queue state vào chrome.storage.local để restore sau khi reload
+ * Khởi tạo IndexedDB cho queue state
+ * @returns {Promise<IDBDatabase>}
+ */
+async function initQueueDB() {
+  return new Promise((resolve, reject) => {
+    // Nếu đã có database instance, return ngay
+    if (queueDB) {
+      resolve(queueDB);
+      return;
+    }
+
+    const request = indexedDB.open(QUEUE_DB_NAME, QUEUE_DB_VERSION);
+
+    request.onerror = () => {
+      const error = request.error;
+      console.error('⚠️ Lỗi khi mở IndexedDB:', error);
+      try {
+        debugLog('⚠️ Lỗi khi mở IndexedDB: ' + error);
+      } catch (_) {}
+      reject(error);
+    };
+
+    request.onsuccess = () => {
+      queueDB = request.result;
+      try {
+        debugLog('✅ Đã khởi tạo IndexedDB cho queue state');
+      } catch (_) {}
+      resolve(queueDB);
+    };
+
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      
+      // Tạo object store nếu chưa có
+      if (!db.objectStoreNames.contains(QUEUE_STORE_NAME)) {
+        db.createObjectStore(QUEUE_STORE_NAME);
+        try {
+          debugLog('✅ Đã tạo object store ' + QUEUE_STORE_NAME);
+        } catch (_) {}
+      }
+    };
+  });
+}
+
+/**
+ * Lưu queue state vào IndexedDB để restore sau khi reload
  */
 async function saveQueueState() {
   try {
-    if (!chrome.storage || !chrome.storage.local) {
-      console.error('⚠️ chrome.storage không sẵn sàng, không thể lưu queue state');
-      try {
-        debugLog('⚠️ chrome.storage không sẵn sàng, không thể lưu queue state');
-      } catch (_) {}
-      return false;
-    }
+    // Khởi tạo IndexedDB nếu chưa có
+    const db = await initQueueDB();
     
+    // Tạo state object với queueList đầy đủ (bao gồm imageBase64)
     const stateData = {
-      queueList: queueList,
+      queueList: queueList.map(q => ({
+        imageBase64: q.imageBase64 || null,
+        prompts: Array.isArray(q.prompts) ? q.prompts : (q.prompt ? [q.prompt] : [])
+      })),
       currentQueueIndex: currentQueueIndex,
       currentPromptIndexInQueue: currentPromptIndexInQueue || 0,
       isQueueMode: isQueueMode,
@@ -507,93 +557,107 @@ async function saveQueueState() {
       totalPromptsProcessed: totalPromptsProcessed || 0
     };
     
+    // Lưu vào IndexedDB với key = "current"
     await new Promise((resolve, reject) => {
-      chrome.storage.local.set({ veoQueueState: stateData }, () => {
-        if (chrome.runtime.lastError) {
-          reject(chrome.runtime.lastError);
-        } else {
-          resolve();
-        }
-      });
+      const transaction = db.transaction([QUEUE_STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(QUEUE_STORE_NAME);
+      const request = store.put(stateData, 'current');
+      
+      request.onsuccess = () => {
+        resolve();
+      };
+      
+      request.onerror = () => {
+        reject(new Error(request.error?.message || 'Lỗi khi lưu vào IndexedDB'));
+      };
     });
     
     try {
-      debugLog('💾 Đã lưu queue state');
+      debugLog('💾 Đã lưu queue state vào IndexedDB');
     } catch (e) {
-      console.log('💾 Đã lưu queue state');
+      console.log('💾 Đã lưu queue state vào IndexedDB');
     }
     return true;
   } catch (e) {
-    console.error('⚠️ Lỗi khi lưu queue state: ', e);
+    const errorMsg = e instanceof Error ? e.message : (typeof e === 'string' ? e : JSON.stringify(e));
+    console.error('⚠️ Lỗi khi lưu queue state: ', errorMsg);
     try {
-      debugLog('⚠️ Lỗi khi lưu queue state: ' + e);
+      debugLog('⚠️ Lỗi khi lưu queue state: ' + errorMsg);
     } catch (_) {}
     return false;
   }
 }
 
 /**
- * Restore queue state từ chrome.storage.local sau khi reload
+ * Restore queue state từ IndexedDB sau khi reload
  */
 async function restoreQueueState() {
   try {
-    if (!chrome.storage || !chrome.storage.local) {
-      console.error('⚠️ chrome.storage không sẵn sàng, không thể restore queue state');
-      try {
-        debugLog('⚠️ chrome.storage không sẵn sàng, không thể restore queue state');
-      } catch (_) {}
-      return false;
-    }
+    // Khởi tạo IndexedDB nếu chưa có
+    const db = await initQueueDB();
     
-    const data = await new Promise((resolve, reject) => {
-      chrome.storage.local.get(['veoQueueState'], (result) => {
-        if (chrome.runtime.lastError) {
-          reject(chrome.runtime.lastError);
-        } else {
-          resolve(result);
-        }
-      });
+    // Lấy state từ IndexedDB với key = "current"
+    const state = await new Promise((resolve, reject) => {
+      const transaction = db.transaction([QUEUE_STORE_NAME], 'readonly');
+      const store = transaction.objectStore(QUEUE_STORE_NAME);
+      const request = store.get('current');
+      
+      request.onsuccess = () => {
+        resolve(request.result || null);
+      };
+      
+      request.onerror = () => {
+        reject(new Error(request.error?.message || 'Lỗi khi lấy từ IndexedDB'));
+      };
     });
     
-    if (!data || !data.veoQueueState) {
+    if (!state) {
       return false;
     }
     
-    const state = data.veoQueueState;
+    // Restore tất cả biến global
+    queueList = state.queueList || [];
+    currentQueueIndex = state.currentQueueIndex || 0;
+    currentPromptIndexInQueue = state.currentPromptIndexInQueue || 0;
+    isQueueMode = state.isQueueMode || false;
+    isRunning = state.isRunning || false;
+    totalPromptsProcessed = state.totalPromptsProcessed || 0;
     
-    if (state) {
-      queueList = state.queueList || [];
-      currentQueueIndex = state.currentQueueIndex || 0;
-      currentPromptIndexInQueue = state.currentPromptIndexInQueue || 0;
-      isQueueMode = state.isQueueMode || false;
-      isRunning = state.isRunning || false;
-      totalPromptsProcessed = state.totalPromptsProcessed || 0;
-      
-      // Kiểm tra tính hợp lệ của state
-      if (queueList.length === 0 || currentQueueIndex < 0 || currentQueueIndex >= queueList.length) {
-        console.log('⚠️ Queue state không hợp lệ, xóa state...');
-        await clearQueueState();
-        return false;
-      }
-      
-      // Kiểm tra tính hợp lệ của currentPromptIndexInQueue
-      const currentQueueItem = queueList[currentQueueIndex];
-      if (currentQueueItem) {
-        const prompts = Array.isArray(currentQueueItem.prompts) ? currentQueueItem.prompts : (currentQueueItem.prompt ? [currentQueueItem.prompt] : []);
-        if (currentPromptIndexInQueue < 0 || currentPromptIndexInQueue >= prompts.length) {
-          console.log('⚠️ currentPromptIndexInQueue không hợp lệ, reset về 0...');
-          currentPromptIndexInQueue = 0;
+    // Kiểm tra tính hợp lệ của state
+    if (queueList.length === 0 || currentQueueIndex < 0 || currentQueueIndex >= queueList.length) {
+      console.log('⚠️ Queue state không hợp lệ, xóa state...');
+      await clearQueueState();
+      return false;
+    }
+    
+    // Kiểm tra tính hợp lệ của currentPromptIndexInQueue
+    const currentQueueItem = queueList[currentQueueIndex];
+    if (currentQueueItem) {
+      const prompts = Array.isArray(currentQueueItem.prompts) ? currentQueueItem.prompts : (currentQueueItem.prompt ? [currentQueueItem.prompt] : []);
+      if (currentPromptIndexInQueue < 0) {
+        console.log('⚠️ currentPromptIndexInQueue < 0, reset về 0...');
+        currentPromptIndexInQueue = 0;
+      } else if (currentPromptIndexInQueue >= prompts.length) {
+        // Đã hoàn thành tất cả prompts trong queue này, chuyển sang queue tiếp theo
+        console.log(`⚠️ currentPromptIndexInQueue (${currentPromptIndexInQueue}) >= prompts.length (${prompts.length}), đã hoàn thành queue này, chuyển sang queue tiếp theo...`);
+        currentQueueIndex++;
+        currentPromptIndexInQueue = 0;
+        
+        // Kiểm tra lại nếu queue mới hợp lệ
+        if (currentQueueIndex >= queueList.length) {
+          console.log('⚠️ Queue đã hoàn thành tất cả, xóa state...');
+          await clearQueueState();
+          return false;
         }
       }
-      
-      try {
-        debugLog(`🔄 Đã restore queue state: queue ${currentQueueIndex + 1}/${queueList.length}, prompt index ${currentPromptIndexInQueue}, prompts processed: ${totalPromptsProcessed}`);
-      } catch (e) {
-        console.log(`🔄 Đã restore queue state: queue ${currentQueueIndex + 1}/${queueList.length}, prompt index ${currentPromptIndexInQueue}, prompts processed: ${totalPromptsProcessed}`);
-      }
-      return true;
     }
-    return false;
+    
+    try {
+      debugLog(`🔄 Đã restore queue state: queue ${currentQueueIndex + 1}/${queueList.length}, prompt index ${currentPromptIndexInQueue}, prompts processed: ${totalPromptsProcessed}`);
+    } catch (e) {
+      console.log(`🔄 Đã restore queue state: queue ${currentQueueIndex + 1}/${queueList.length}, prompt index ${currentPromptIndexInQueue}, prompts processed: ${totalPromptsProcessed}`);
+    }
+    return true;
   } catch (e) {
     console.error('⚠️ Lỗi khi restore queue state: ', e);
     try {
@@ -604,29 +668,32 @@ async function restoreQueueState() {
 }
 
 /**
- * Xóa queue state đã lưu
+ * Xóa queue state đã lưu từ IndexedDB
  */
 async function clearQueueState() {
   try {
-    if (!chrome.storage || !chrome.storage.local) {
-      console.error('⚠️ chrome.storage không sẵn sàng, không thể xóa queue state');
-      return false;
-    }
+    // Khởi tạo IndexedDB nếu chưa có
+    const db = await initQueueDB();
     
+    // Xóa state khỏi IndexedDB với key = "current"
     await new Promise((resolve, reject) => {
-      chrome.storage.local.remove(['veoQueueState'], () => {
-        if (chrome.runtime.lastError) {
-          reject(chrome.runtime.lastError);
-        } else {
-          resolve();
-        }
-      });
+      const transaction = db.transaction([QUEUE_STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(QUEUE_STORE_NAME);
+      const request = store.delete('current');
+      
+      request.onsuccess = () => {
+        resolve();
+      };
+      
+      request.onerror = () => {
+        reject(new Error(request.error?.message || 'Lỗi khi xóa từ IndexedDB'));
+      };
     });
     
     try {
-      debugLog('🗑️ Đã xóa queue state');
+      debugLog('🗑️ Đã xóa queue state từ IndexedDB');
     } catch (e) {
-      console.log('🗑️ Đã xóa queue state');
+      console.log('🗑️ Đã xóa queue state từ IndexedDB');
     }
     return true;
   } catch (e) {
@@ -1071,20 +1138,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Clear tất cả timers
         clearRestartTimer();
         
-        // Clear tất cả state
-        await clearFlowState();
-        await clearQueueState();
-        
-        // Reset các biến state
-        prompts = [];
-        queueList = [];
-        currentPromptIndex = 0;
-        currentQueueIndex = 0;
-        currentPromptIndexInQueue = 0;
-        totalPrompts = 0;
-        totalPromptsProcessed = 0;
-        isQueueMode = false;
-        initialImageFile = null;
+        // Nếu đang ở queue mode, lưu state với isRunning = false để có thể continue sau
+        if (isQueueMode && queueList.length > 0) {
+          // Lưu queue state với isRunning = false
+          await saveQueueState();
+          debugLog('⏹️ Đã dừng queue (state đã được lưu để continue sau)');
+        } else {
+          // Normal flow mode hoặc không có queue - xóa state
+          await clearFlowState();
+          await clearQueueState();
+          
+          // Reset các biến state
+          prompts = [];
+          queueList = [];
+          currentPromptIndex = 0;
+          currentQueueIndex = 0;
+          currentPromptIndexInQueue = 0;
+          totalPrompts = 0;
+          totalPromptsProcessed = 0;
+          isQueueMode = false;
+          initialImageFile = null;
+          
+          debugLog('⏹️ Đã dừng flow (state đã được xóa)');
+        }
         
         try {
           chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Stopped' });
@@ -1092,7 +1168,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           console.error('Lỗi khi gửi FLOW_STATUS: ', e);
         }
         
-        debugLog('⏹️ Đã dừng toàn bộ flow và queue');
         sendResponse && sendResponse({ ok: true });
       } catch (e) {
         console.error('Lỗi trong STOP_FLOW: ', e);
@@ -1190,6 +1265,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         isQueueMode = true;
         isRunning = true;
         
+        // Lưu state vào IndexedDB
+        await saveQueueState();
+        
         try {
           chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Queue Running' });
         } catch (e) {
@@ -1202,6 +1280,179 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse && sendResponse({ ok: true });
       } catch (e) {
         console.error('Lỗi trong START_QUEUE: ', e);
+        sendResponse && sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true; // Báo cho Chrome biết sẽ gửi response bất đồng bộ
+  }
+  
+  if (message.type === 'CONTINUE_QUEUE') {
+    (async () => {
+      try {
+        // Kiểm tra có queue state không
+        const hasQueueState = await restoreQueueState();
+        if (!hasQueueState) {
+          sendResponse && sendResponse({ ok: false, error: 'Không có queue state để tiếp tục' });
+          return;
+        }
+        
+        // Kiểm tra xem có đang ở tab Scenebuilder không
+        if (!isScenebuilderTab()) {
+          debugLog('❌ Không phải tab Scenebuilder!');
+          updateScenebuilderMask(true);
+          sendResponse && sendResponse({ ok: false, error: 'Không phải tab Scenebuilder' });
+          return;
+        }
+        
+        // Ẩn mask nếu đang hiển thị
+        updateScenebuilderMask(false);
+        
+        userStopped = false;
+        clearRestartTimer();
+        
+        // Kiểm tra nếu còn video đang render thì không cho continue
+        if (isProgressRunning()) {
+          debugLog('⚠️ Đang có video render, không thể continue queue!');
+          sendResponse && sendResponse({ ok: false, error: 'Video đang render' });
+          return;
+        }
+        
+        // Đảm bảo isRunning = true và isQueueMode = true
+        isRunning = true;
+        isQueueMode = true;
+        
+        try {
+          chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Queue Running' });
+        } catch (e) {
+          console.error('Lỗi khi gửi FLOW_STATUS: ', e);
+        }
+        
+        debugLog(`Tiếp tục queue từ queue #${currentQueueIndex + 1}, prompt #${currentPromptIndexInQueue + 1}`);
+        sendQueueProgressUpdate();
+        runQueueFlow();
+        sendResponse && sendResponse({ ok: true });
+      } catch (e) {
+        console.error('Lỗi trong CONTINUE_QUEUE: ', e);
+        sendResponse && sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true; // Báo cho Chrome biết sẽ gửi response bất đồng bộ
+  }
+  
+  if (message.type === 'RESTART_QUEUE') {
+    // Validate RESTART_QUEUE message structure
+    if (!Array.isArray(message.queueList) || message.queueList.length === 0) {
+      sendResponse && sendResponse({ ok: false, error: 'Queue list không hợp lệ' });
+      return false;
+    }
+    
+    // Validate queue items (giống START_QUEUE)
+    for (let i = 0; i < message.queueList.length; i++) {
+      const queueItem = message.queueList[i];
+      
+      let prompts = [];
+      if (Array.isArray(queueItem.prompts)) {
+        prompts = queueItem.prompts;
+      } else if (queueItem.prompt && typeof queueItem.prompt === 'string') {
+        prompts = [queueItem.prompt];
+      } else {
+        sendResponse && sendResponse({ ok: false, error: `Queue #${i + 1}: prompts không hợp lệ` });
+        return false;
+      }
+      
+      if (prompts.length === 0) {
+        sendResponse && sendResponse({ ok: false, error: `Queue #${i + 1}: không có prompt nào` });
+        return false;
+      }
+      
+      for (let j = 0; j < prompts.length; j++) {
+        if (!validatePrompt(prompts[j])) {
+          sendResponse && sendResponse({ ok: false, error: `Queue #${i + 1}, Prompt #${j + 1}: không hợp lệ` });
+          return false;
+        }
+      }
+      
+      if (queueItem.imageBase64 !== null && queueItem.imageBase64 !== undefined) {
+        if (!validateBase64Image(queueItem.imageBase64)) {
+          sendResponse && sendResponse({ ok: false, error: `Queue #${i + 1}: Base64 image không hợp lệ` });
+          return false;
+        }
+      }
+    }
+    
+    (async () => {
+      try {
+        // Kiểm tra xem có đang ở tab Scenebuilder không
+        if (!isScenebuilderTab()) {
+          debugLog('❌ Không phải tab Scenebuilder!');
+          updateScenebuilderMask(true);
+          sendResponse && sendResponse({ ok: false, error: 'Không phải tab Scenebuilder' });
+          return;
+        }
+        
+        // Ẩn mask nếu đang hiển thị
+        updateScenebuilderMask(false);
+        
+        userStopped = false;
+        clearRestartTimer();
+        await clearQueueState(); // Xóa state cũ khi restart
+        
+        // Kiểm tra nếu còn video đang render thì không cho restart
+        if (isProgressRunning()) {
+          debugLog('⚠️ Đang có video render, không thể restart queue!');
+          sendResponse && sendResponse({ ok: false, error: 'Video đang render' });
+          return;
+        }
+        
+        // Set queue mode - restart từ đầu
+        queueList = message.queueList;
+        currentQueueIndex = 0;
+        currentPromptIndexInQueue = 0;
+        totalPromptsProcessed = 0;
+        isQueueMode = true;
+        isRunning = true;
+        
+        // Lưu state mới
+        await saveQueueState();
+        
+        try {
+          chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Queue Running' });
+        } catch (e) {
+          console.error('Lỗi khi gửi FLOW_STATUS: ', e);
+        }
+        
+        debugLog('Restart queue với ' + queueList.length + ' queue items');
+        sendQueueProgressUpdate();
+        runQueueFlow();
+        sendResponse && sendResponse({ ok: true });
+      } catch (e) {
+        console.error('Lỗi trong RESTART_QUEUE: ', e);
+        sendResponse && sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true; // Báo cho Chrome biết sẽ gửi response bất đồng bộ
+  }
+  
+  if (message.type === 'UPDATE_QUEUE_LIST') {
+    (async () => {
+      try {
+        // Validate queue list
+        if (!Array.isArray(message.queueList)) {
+          sendResponse && sendResponse({ ok: false, error: 'Queue list không hợp lệ' });
+          return;
+        }
+        
+        // Cập nhật queueList nhưng giữ nguyên state hiện tại (currentQueueIndex, currentPromptIndexInQueue)
+        // Chỉ cập nhật dữ liệu của queue, không restart
+        queueList = message.queueList;
+        
+        // Lưu state mới với queue list đã cập nhật
+        await saveQueueState();
+        
+        debugLog('Đã cập nhật queue list (giữ nguyên vị trí hiện tại)');
+        sendResponse && sendResponse({ ok: true });
+      } catch (e) {
+        console.error('Lỗi trong UPDATE_QUEUE_LIST: ', e);
         sendResponse && sendResponse({ ok: false, error: String(e) });
       }
     })();
@@ -2282,22 +2533,49 @@ async function runQueueFlow() {
             success = true;
             // Tăng tổng số prompt đã xử lý
             totalPromptsProcessed++;
-            // Cập nhật currentPromptIndexInQueue để tiếp tục từ prompt tiếp theo (nếu reload)
-            currentPromptIndexInQueue = promptIndex + 1;
+            
+            // Cập nhật progress ngay lập tức sau mỗi prompt
+            sendQueueProgressUpdate();
+            
+            // Kiểm tra xem có phải prompt cuối cùng trong queue này không
+            const isLastPromptInQueue = promptIndex === prompts.length - 1;
+            
+            if (isLastPromptInQueue) {
+              // Đã hoàn thành tất cả prompts trong queue này
+              // Tăng currentQueueIndex và reset currentPromptIndexInQueue TRƯỚC KHI lưu state
+              currentQueueIndex++;
+              currentPromptIndexInQueue = 0;
+              
+              debugLog(`✅ Đã hoàn thành Queue #${currentQueueIndex}/${queueList.length} với ${prompts.length} prompt(s)`);
+              
+              // Kiểm tra xem còn queue tiếp theo không
+              if (currentQueueIndex >= queueList.length) {
+                // Đã hoàn thành tất cả queue
+                debugLog('✅ Đã hoàn thành tất cả queue!');
+                isRunning = false;
+                await clearQueueState();
+                chrome.runtime.sendMessage({ type: 'FLOW_STATUS', status: 'Idle' });
+                return;
+              }
+            } else {
+              // Chưa phải prompt cuối cùng, cập nhật currentPromptIndexInQueue để tiếp tục từ prompt tiếp theo
+              currentPromptIndexInQueue = promptIndex + 1;
+            }
             
             // Reload trang sau mỗi 4 prompt thành công (nếu còn prompt tiếp theo hoặc queue tiếp theo)
             // Reload khi totalPromptsProcessed là 4, 8, 12... (bội số của 4)
-            const hasMorePrompts = promptIndex < prompts.length - 1 || currentQueueIndex < queueList.length - 1;
+            const hasMorePrompts = !isLastPromptInQueue || currentQueueIndex < queueList.length;
             if (hasMorePrompts && totalPromptsProcessed % 4 === 0) {
               debugLog(`🔄 Đã hoàn thành ${totalPromptsProcessed} prompt, đang lưu state và reload trang...`);
+              // Đảm bảo isRunning = true trước khi lưu state để tiếp tục sau reload
+              isRunning = true;
+              userStopped = false;
               await saveQueueState();
               await sleep(500); // Đợi một chút để đảm bảo state được lưu
               location.reload();
               return; // Dừng flow, sẽ tiếp tục sau khi reload
             }
             
-            // Chỉ tăng promptIndex, không tăng currentQueueIndex ở đây
-            // currentQueueIndex sẽ được tăng sau khi xử lý xong tất cả prompts trong queue item này
             break; // Thoát khỏi retry loop
           } else {
             // Video render lỗi (timeout), reload trang ngay lập tức để retry
@@ -2378,10 +2656,13 @@ async function runQueueFlow() {
     }
     } // End for loop prompts
     
-    // Đã xử lý xong tất cả prompts trong queue item này
-    debugLog(`✅ Đã hoàn thành Queue #${currentQueueIndex + 1} với ${prompts.length} prompt(s)`);
-    currentQueueIndex++;
-    currentPromptIndexInQueue = 0; // Reset prompt index khi chuyển sang queue tiếp theo
+    // Lưu ý: Nếu đã hoàn thành tất cả prompts trong queue, currentQueueIndex và currentPromptIndexInQueue 
+    // đã được cập nhật trong vòng lặp (khi xử lý prompt cuối cùng)
+    // Chỉ cần log và update progress nếu chưa được xử lý
+    if (currentPromptIndexInQueue === 0 && currentQueueIndex > 0) {
+      // Đã chuyển sang queue tiếp theo trong vòng lặp
+      debugLog(`✅ Đã hoàn thành Queue #${currentQueueIndex}/${queueList.length}`);
+    }
     sendQueueProgressUpdate();
     
     // Reload trang sau mỗi 4 queue thành công (nếu còn queue tiếp theo)
@@ -2553,15 +2834,30 @@ async function saveFrameAsAsset() {
     btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     // Chờ menu xuất hiện
     await sleep(DELAYS.LONG);
-    // Tìm menu item "Save frame as asset"
+    // Tìm menu item "Save frame as asset" bằng icon add_photo_alternate
     debugLog('🔍 Tìm menu item Save frame...');
     const menuItems = document.querySelectorAll('[role="menuitem"]');
     debugLog(`Tìm thấy ${menuItems.length} menu items`);
     
-    // Thử tìm bằng aria-label trước (không phụ thuộc ngôn ngữ)
-    let saveMenuItem = findButtonByAttributes(Array.from(menuItems), ['save', 'frame'], null);
+    // Tìm icon add_photo_alternate trong menu items
+    let saveMenuItem = null;
+    const allIcons = Array.from(document.querySelectorAll('i.material-icons-outlined, i.material-icons'));
+    const addPhotoIcon = allIcons.find(i => i.textContent.trim() === 'add_photo_alternate');
     
-    // Nếu không tìm thấy, dùng text matching đa ngôn ngữ
+    if (addPhotoIcon) {
+      // Tìm menu item chứa icon này
+      saveMenuItem = addPhotoIcon.closest('[role="menuitem"]');
+      if (saveMenuItem) {
+        debugLog('✓ Tìm thấy menu item Save frame bằng icon add_photo_alternate');
+      }
+    }
+    
+    // Fallback: thử tìm bằng aria-label nếu không tìm được bằng icon
+    if (!saveMenuItem) {
+      saveMenuItem = findButtonByAttributes(Array.from(menuItems), ['save', 'frame'], null);
+    }
+    
+    // Fallback: dùng text matching đa ngôn ngữ
     if (!saveMenuItem) {
       saveMenuItem = findButtonByText(Array.from(menuItems), 'SAVE_FRAME', { requireAll: true });
     }
@@ -3504,13 +3800,23 @@ async function autoRestoreAndContinue() {
       }
     }
     
-    // Đợi thêm 5s để ổn định sau khi thumbnail đã xuất hiện
+    // Đợi thêm 5s để ổn định sau khi trang đã load
     try {
-      debugLog('⏳ Đang đợi 5s để ổn định sau khi thumbnail xuất hiện...');
+      debugLog('⏳ Đang đợi 5s để ổn định sau khi trang load...');
     } catch (e) {
-      console.log('⏳ Đang đợi 5s để ổn định sau khi thumbnail xuất hiện...');
+      console.log('⏳ Đang đợi 5s để ổn định sau khi trang load...');
     }
     await sleep(5000);
+    
+    // Khởi tạo IndexedDB trước khi restore state
+    try {
+      await initQueueDB();
+    } catch (e) {
+      console.error('⚠️ Lỗi khi khởi tạo IndexedDB: ', e);
+      try {
+        debugLog('⚠️ Lỗi khi khởi tạo IndexedDB: ' + e);
+      } catch (_) {}
+    }
     
     // Kiểm tra xem có đang ở tab Scenebuilder không (sau khi DOM đã load xong)
     // Restore queue state và normal flow state
@@ -3536,7 +3842,62 @@ async function autoRestoreAndContinue() {
       updateScenebuilderMask(false);
     }
     
+    // Debug: log các biến sau khi restore để kiểm tra
+    if (hasQueueState) {
+      try {
+        debugLog(`🔍 Debug restore queue: isQueueMode=${isQueueMode}, isRunning=${isRunning}, currentQueueIndex=${currentQueueIndex}, queueList.length=${queueList.length}, userStopped=${userStopped}`);
+      } catch (e) {
+        console.log(`🔍 Debug restore queue: isQueueMode=${isQueueMode}, isRunning=${isRunning}, currentQueueIndex=${currentQueueIndex}, queueList.length=${queueList.length}, userStopped=${userStopped}`);
+      }
+      
+      // Đảm bảo các biến được set đúng sau khi restore
+      // Nếu có queue state và còn queue để xử lý, đảm bảo isRunning và userStopped đúng
+      if (currentQueueIndex < queueList.length) {
+        // Còn queue để xử lý, đảm bảo isRunning = true và userStopped = false
+        // Lưu ý: Nếu state được lưu với isRunning = false (đã stop), không tự động set lại = true
+        // Chỉ set lại = true nếu state được lưu với isRunning = true (đang chạy trước khi reload)
+        // Nhưng vì đã restore rồi, nên isRunning đã có giá trị từ state
+        // Nếu state có isRunning = true, thì giữ nguyên
+        // Nếu state có isRunning = false (đã stop), thì không tự động tiếp tục
+        
+        // Chỉ set lại userStopped = false nếu isRunning = true (để có thể continue)
+        if (isRunning && userStopped) {
+          try {
+            debugLog('⚠️ userStopped=true sau restore nhưng isRunning=true, đang set lại userStopped = false');
+          } catch (e) {
+            console.log('⚠️ userStopped=true sau restore nhưng isRunning=true, đang set lại userStopped = false');
+          }
+          userStopped = false;
+        }
+        
+        // Đảm bảo isQueueMode = true
+        if (!isQueueMode) {
+          try {
+            debugLog('⚠️ isQueueMode=false sau restore, đang set lại = true');
+          } catch (e) {
+            console.log('⚠️ isQueueMode=false sau restore, đang set lại = true');
+          }
+          isQueueMode = true;
+        }
+      }
+    }
+    
     // Restore state và tiếp tục flow
+    // Chỉ tiếp tục nếu:
+    // 1. Có queue state
+    // 2. isQueueMode = true
+    // 3. isRunning = true (đang chạy trước khi reload, không phải đã stop)
+    // 4. Còn queue để xử lý
+    // 5. userStopped = false
+    if (hasQueueState) {
+      // Debug: log từng điều kiện để xem điều kiện nào không thỏa mãn
+      try {
+        debugLog(`🔍 Kiểm tra điều kiện tiếp tục: hasQueueState=${hasQueueState}, isQueueMode=${isQueueMode}, isRunning=${isRunning}, currentQueueIndex=${currentQueueIndex}, queueList.length=${queueList.length}, userStopped=${userStopped}`);
+      } catch (e) {
+        console.log(`🔍 Kiểm tra điều kiện tiếp tục: hasQueueState=${hasQueueState}, isQueueMode=${isQueueMode}, isRunning=${isRunning}, currentQueueIndex=${currentQueueIndex}, queueList.length=${queueList.length}, userStopped=${userStopped}`);
+      }
+    }
+    
     if (hasQueueState && isQueueMode && isRunning && currentQueueIndex < queueList.length && !userStopped) {
       try {
         debugLog(`🔄 Tiếp tục queue từ queue #${currentQueueIndex + 1} sau reload...`);
@@ -3579,12 +3940,24 @@ async function autoRestoreAndContinue() {
       runFlow();
     } else if (hasQueueState) {
       // Có queue state nhưng queue đã hoàn thành hoặc đã dừng
-      try {
-        debugLog('ℹ️ Có queue state nhưng queue đã hoàn thành hoặc đã dừng, xóa state...');
-      } catch (e) {
-        console.log('ℹ️ Có queue state nhưng queue đã hoàn thành hoặc đã dừng, xóa state...');
+      // Nếu isRunning = false (đã stop), giữ lại state để có thể continue
+      // Chỉ xóa nếu queue đã hoàn thành (currentQueueIndex >= queueList.length)
+      if (currentQueueIndex >= queueList.length) {
+        // Queue đã hoàn thành, xóa state
+        try {
+          debugLog('ℹ️ Queue đã hoàn thành, xóa state...');
+        } catch (e) {
+          console.log('ℹ️ Queue đã hoàn thành, xóa state...');
+        }
+        await clearQueueState();
+      } else {
+        // Queue đã dừng (isRunning = false) nhưng chưa hoàn thành, giữ lại state để continue
+        try {
+          debugLog(`ℹ️ Queue đã dừng tại queue #${currentQueueIndex + 1}, prompt #${currentPromptIndexInQueue + 1}. Có thể tiếp tục bằng nút Continue.`);
+        } catch (e) {
+          console.log(`ℹ️ Queue đã dừng tại queue #${currentQueueIndex + 1}, prompt #${currentPromptIndexInQueue + 1}. Có thể tiếp tục bằng nút Continue.`);
+        }
       }
-      await clearQueueState();
     } else if (hasState) {
       // Có state nhưng flow đã hoàn thành hoặc đã dừng
       try {
