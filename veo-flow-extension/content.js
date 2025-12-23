@@ -195,7 +195,8 @@ const TEXT_MAPPINGS = {
     UPLOAD: ['upload', 'browse'],
     CANCEL: ['cancel'],
     CLOSE: ['close'],
-    NOTICE: ['Notice', 'necessary rights', 'Prohibited Use Policy']
+    NOTICE: ['Notice', 'necessary rights', 'Prohibited Use Policy'],
+    EXTEND: ['Extend', 'Kéo dài']
   },
   ja: {
     CROP_AND_SAVE: ['クロップして保存', 'クロップと保存', '保存'],
@@ -206,7 +207,8 @@ const TEXT_MAPPINGS = {
     UPLOAD: ['アップロード', 'アップロードする'],
     CANCEL: ['キャンセル', '取消'],
     CLOSE: ['閉じる', '閉'],
-    NOTICE: ['通知', '注意事項', '利用規約']
+    NOTICE: ['通知', '注意事項', '利用規約'],
+    EXTEND: ['Extend', 'Kéo dài']
   }
 };
 
@@ -330,6 +332,7 @@ let totalPromptsProcessed = 0; // Tổng số prompt đã xử lý trong queue f
 let restartTimeoutId = null;
 let userStopped = false;
 let initialImageFile = null; // Base64 string của ảnh bắt đầu
+let sceneMode = 'extend'; // 'extend' or 'save_frame' - Mode cho scenes không có ảnh
 
 // Queue state
 let queueList = [];
@@ -554,7 +557,8 @@ async function saveQueueState() {
       currentPromptIndexInQueue: currentPromptIndexInQueue || 0,
       isQueueMode: isQueueMode,
       isRunning: isRunning,
-      totalPromptsProcessed: totalPromptsProcessed || 0
+      totalPromptsProcessed: totalPromptsProcessed || 0,
+      sceneMode: sceneMode || 'extend' // Lưu scene mode để restore sau khi reload
     };
     
     // Lưu vào IndexedDB với key = "current"
@@ -622,6 +626,7 @@ async function restoreQueueState() {
     isQueueMode = state.isQueueMode || false;
     isRunning = state.isRunning || false;
     totalPromptsProcessed = state.totalPromptsProcessed || 0;
+    sceneMode = state.sceneMode || 'extend'; // Restore scene mode
     
     // Kiểm tra tính hợp lệ của state
     if (queueList.length === 0 || currentQueueIndex < 0 || currentQueueIndex >= queueList.length) {
@@ -1105,6 +1110,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     currentPromptIndex = 0;
     totalPrompts = prompts.length;
     initialImageFile = message.initialImageFile || null; // Lưu ảnh bắt đầu nếu có
+    sceneMode = message.sceneMode || 'extend'; // Lưu scene mode ('extend' or 'save_frame')
     isRunning = true;
         
         try {
@@ -1249,6 +1255,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         userStopped = false;
         clearRestartTimer();
         await clearQueueState(); // Xóa state cũ khi bắt đầu queue mới
+        
+        // Lưu scene mode từ message
+        sceneMode = message.sceneMode || 'extend';
         
         // Kiểm tra nếu còn video đang render thì không cho chạy queue mới
         if (isProgressRunning()) {
@@ -1409,6 +1418,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         currentQueueIndex = 0;
         currentPromptIndexInQueue = 0;
         totalPromptsProcessed = 0;
+        sceneMode = message.sceneMode || 'extend'; // Lưu scene mode từ message
         isQueueMode = true;
         isRunning = true;
         
@@ -1850,11 +1860,17 @@ async function runFlow() {
       
       while (!success && retryCount < RETRY_LIMITS.PROMPT && !userStopped) {
         try {
+          // Với scenes không có ảnh, dùng mode đã chọn (Extend hoặc Save Frame)
           // Luôn scroll asset list đến cuối trước mỗi prompt
           await scrollAssetListToEnd();
-          await saveFrameAsAsset();
-          await openImagePicker();
-          await selectLatestAsset();
+          if (sceneMode === 'extend') {
+            await extendScene();
+          } else {
+            // Mode cũ: save frame → chọn asset
+            await saveFrameAsAsset();
+            await openImagePicker();
+            await selectLatestAsset();
+          }
           await inputPrompt(prompts[currentPromptIndex]);
           await clickGenerate();
 
@@ -2267,11 +2283,16 @@ async function runQueueFlow() {
                 // 1. Chọn mode Frame to Video
                 await ensureFrameToVideoMode();
                 
-                // 2. Dùng flow hiện tại: save frame → chọn asset → nhập prompt → generate
+                // 2. Với scenes không có ảnh, dùng mode đã chọn (Extend hoặc Save Frame)
                 await scrollAssetListToEnd();
-                await saveFrameAsAsset();
-                await openImagePicker();
-                await selectLatestAsset();
+                if (sceneMode === 'extend') {
+                  await extendScene();
+                } else {
+                  // Mode cũ: save frame → chọn asset
+                  await saveFrameAsAsset();
+                  await openImagePicker();
+                  await selectLatestAsset();
+                }
                 await inputPrompt(prompt);
                 await clickGenerate();
               }
@@ -2431,17 +2452,22 @@ async function runQueueFlow() {
                   return;
                 }
               } else {
-                // Không có ảnh hoặc prompt tiếp theo: dùng flow hiện tại (saveFrameAsAsset → chọn asset → nhập prompt → generate)
-                debugLog('📸 Dùng frame từ video trước...');
+                // Không có ảnh hoặc prompt tiếp theo: dùng mode đã chọn (Extend hoặc Save Frame)
+                debugLog(`📸 Dùng ${sceneMode === 'extend' ? 'Extend' : 'Save Frame'} để tiếp tục scene...`);
                 
                 // 1. Chọn mode Frame to Video
                 await ensureFrameToVideoMode();
                 
-                // 2. Save frame → chọn asset → nhập prompt → generate
+                // 2. Extend hoặc Save Frame → nhập prompt → generate
                 await scrollAssetListToEnd();
-                await saveFrameAsAsset();
-                await openImagePicker();
-                await selectLatestAsset();
+                if (sceneMode === 'extend') {
+                  await extendScene();
+                } else {
+                  // Mode cũ: save frame → chọn asset
+                  await saveFrameAsAsset();
+                  await openImagePicker();
+                  await selectLatestAsset();
+                }
                 await inputPrompt(prompt);
                 await clickGenerate();
               }
@@ -2879,6 +2905,288 @@ async function saveFrameAsAsset() {
   }
 }
 
+
+/**
+ * Helper function để test tìm video cuối cùng (có thể gọi từ console)
+ * Tìm nút "+" trước, sau đó tìm asset list bên trái nút đó
+ * @returns {Object} Thông tin về video items tìm được
+ */
+function testFindLastVideo() {
+  const BUTTON_ID = 'PINHOLE_ADD_CLIP_CARD_ID';
+  
+  // Tìm nút "+" trước
+  const addButton = document.getElementById(BUTTON_ID);
+  if (!addButton) {
+    console.log(`❌ Không tìm thấy nút "+" với ID "${BUTTON_ID}"`);
+    return { found: false, addButton: null, assetList: null, items: [] };
+  }
+  
+  console.log('✅ Tìm thấy nút "+":', addButton);
+  
+  // Tìm asset list ở bên trái nút "+" (cùng parent container)
+  let assetList = null;
+  
+  // Thử tìm từ parent của nút "+"
+  let parent = addButton.parentElement;
+  let searchDepth = 0;
+  const maxDepth = 5;
+  
+  while (parent && searchDepth < maxDepth) {
+    assetList = parent.querySelector('.virtuoso-grid-list') || parent.querySelector('[role="grid"]');
+    if (assetList) {
+      console.log(`✅ Tìm thấy asset list ở parent level ${searchDepth}:`, assetList);
+      break;
+    }
+    parent = parent.parentElement;
+    searchDepth++;
+  }
+  
+  // Nếu không tìm thấy, thử tìm các sibling elements bên trái nút "+"
+  if (!assetList) {
+    console.log('⚠️ Không tìm thấy asset list trong parents, thử tìm sibling bên trái...');
+    let sibling = addButton.previousElementSibling;
+    searchDepth = 0;
+    while (sibling && searchDepth < 10) {
+      assetList = sibling.querySelector('.virtuoso-grid-list') || sibling.querySelector('[role="grid"]') || (sibling.classList.contains('virtuoso-grid-list') ? sibling : null);
+      if (assetList) {
+        console.log(`✅ Tìm thấy asset list ở sibling bên trái (level ${searchDepth}):`, assetList);
+        break;
+      }
+      sibling = sibling.previousElementSibling;
+      searchDepth++;
+    }
+  }
+  
+  if (!assetList) {
+    console.log('❌ Không tìm thấy asset list bên trái nút "+"');
+    return { found: false, addButton: addButton, assetList: null, items: [] };
+  }
+  
+  console.log('✅ Tìm thấy asset list:', assetList);
+  console.log('📊 Asset list classes:', assetList.className);
+  console.log('📊 Asset list role:', assetList.getAttribute('role'));
+  
+  // Thử nhiều cách tìm video items
+  const methods = {
+    method1: Array.from(assetList.querySelectorAll('[role="gridcell"]')),
+    method2: Array.from(assetList.querySelectorAll('button')),
+    method3: Array.from(assetList.querySelectorAll('[data-index]')),
+    method4: Array.from(assetList.querySelectorAll('[data-index] button')),
+    method5: Array.from(assetList.querySelectorAll('div[class*="clip"], div[class*="video"]')),
+    method6: Array.from(assetList.querySelectorAll('*')).filter(el => {
+      return el.querySelector('video') || (el.querySelector('img') && (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button' || el.getAttribute('role') === 'gridcell'));
+    })
+  };
+  
+  console.log('📊 Kết quả các phương pháp:');
+  Object.keys(methods).forEach(key => {
+    const visible = methods[key].filter(item => item.offsetParent !== null);
+    console.log(`  ${key}: ${methods[key].length} items (${visible.length} visible)`);
+    if (visible.length > 0) {
+      console.log(`    - Item đầu:`, visible[0]);
+      console.log(`    - Item cuối:`, visible[visible.length - 1]);
+    }
+  });
+  
+  // Thử method tốt nhất: data-index buttons
+  const dataIndexButtons = Array.from(assetList.querySelectorAll('[data-index] button')).filter(btn => btn.offsetParent !== null);
+  const allDataIndex = Array.from(assetList.querySelectorAll('[data-index]')).filter(el => el.offsetParent !== null);
+  
+  console.log('📊 Data-index items:', allDataIndex.length);
+  allDataIndex.forEach((item, idx) => {
+    const index = item.getAttribute('data-index');
+    const hasButton = item.querySelector('button');
+    const button = item.querySelector('button');
+    console.log(`  [${idx}] data-index="${index}", hasButton: ${!!hasButton}, tag: ${item.tagName}`, button);
+  });
+  
+  console.log('📊 Data-index buttons:', dataIndexButtons.length);
+  dataIndexButtons.forEach((btn, idx) => {
+    const parentIndex = btn.closest('[data-index]')?.getAttribute('data-index');
+    console.log(`  [${idx}] Button:`, btn, 'parent data-index:', parentIndex);
+  });
+  
+  const lastButton = dataIndexButtons.length > 0 ? dataIndexButtons[dataIndexButtons.length - 1] : null;
+  if (lastButton) {
+    console.log('✅ Video cuối cùng:', lastButton);
+    console.log('📋 Parent data-index:', lastButton.closest('[data-index]')?.getAttribute('data-index'));
+  } else {
+    console.log('⚠️ Không tìm thấy button cuối cùng');
+  }
+  
+  return {
+    found: true,
+    assetList: assetList,
+    methods: methods,
+    dataIndexItems: allDataIndex,
+    dataIndexButtons: dataIndexButtons,
+    lastDataIndexButton: lastButton
+  };
+}
+
+// Expose function to window for console testing
+if (typeof window !== 'undefined') {
+  window.testFindLastVideo = testFindLastVideo;
+}
+
+/**
+ * Extend scene: Click nút "+" bên cạnh list video và chọn "Extend..." để tiếp tục scene không có ảnh
+ * - Tìm nút "+" bên cạnh list video
+ * - Mở menu
+ * - Chọn menu item "Extend..." hoặc "Kéo dài..."
+ * @returns {Promise<void>}
+ * @throws {Error} Nếu không tìm thấy nút "+" hoặc menu item Extend
+ */
+async function extendScene() {
+  // Kiểm tra tab Scenebuilder
+  if (!isScenebuilderTab()) {
+    updateScenebuilderMask(true);
+    throw 'Không phải tab Scenebuilder';
+  }
+  
+  debugLog('📍 extendScene: Bắt đầu...');
+  
+  try {
+    // Inject script nếu chưa có
+    const INJECTION_MARKER = '__veo3_flow_injected_' + chrome.runtime.id.replace(/-/g, '_');
+    
+    if (!window[INJECTION_MARKER]) {
+      debugLog('🔧 Đang inject script vào main world...');
+      
+      // Tạo script tag và load từ extension
+      const script = document.createElement('script');
+      script.src = chrome.runtime.getURL('injected.js');
+      script.onload = function() {
+        this.remove();
+        debugLog('✓ injected.js đã load và remove');
+      };
+      (document.head || document.documentElement).appendChild(script);
+      
+      // Đánh dấu đã inject với tên khó đoán
+      window[INJECTION_MARKER] = true;
+      debugLog('✓ Đã inject script main world.');
+      
+      // Chờ script được execute
+      await sleep(DELAYS.SHORT * 2);
+      
+      // Kiểm tra tính toàn vẹn của function
+      if (typeof window.clickLastVideo !== 'function') {
+        throw 'Function clickLastVideo không tồn tại sau khi inject';
+      }
+    }
+    
+    // Click vào video cuối cùng trong timeline
+    debugLog('🎯 Click vào video cuối cùng...');
+    const clickResult = await new Promise((resolve, reject) => {
+      let resolved = false;
+      const currentOrigin = window.location.origin;
+      function handler(e) {
+        if (e.origin !== currentOrigin || !e.data || e.data.type !== 'CLICK_LAST_VIDEO_RESULT') {
+          return;
+        }
+        if (resolved) return;
+        resolved = true;
+        window.removeEventListener('message', handler);
+        resolve(e.data);
+      }
+      window.addEventListener('message', handler);
+      window.postMessage({ type: 'CLICK_LAST_VIDEO_REQUEST' }, currentOrigin);
+      setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
+        window.removeEventListener('message', handler);
+        reject(`Timeout click video cuối cùng (${TIMEOUTS.SLIDER_DRAG/1000}s)`);
+      }, TIMEOUTS.SLIDER_DRAG);
+    });
+    if (!clickResult.ok) {
+      const errorMsg = clickResult.error || 'unknown';
+      if (!clickResult.error || clickResult.error === 'unknown' || clickResult.error === null) {
+        debugLog('⚠️ Phát hiện trang có thể bị chết, sẽ reload trang...');
+        const reloadError = new Error('PAGE_DEAD_NEED_RELOAD');
+        reloadError.isPageDead = true;
+        throw reloadError;
+      }
+      throw 'Không click được vào video cuối cùng: ' + errorMsg;
+    }
+    debugLog('✓ Đã click vào video cuối cùng');
+    await sleep(DELAYS.MEDIUM);
+    
+    // Tìm nút "+" để mở menu Extend
+    const BUTTON_ID = 'PINHOLE_ADD_CLIP_CARD_ID';
+    let btn = null;
+    let retries = 0;
+    const maxRetries = 10;
+    
+    while (!btn && retries < maxRetries) {
+      debugLog(`🔍 Tìm nút "+" với ID "${BUTTON_ID}"... (lần ${retries + 1}/${maxRetries})`);
+      
+      btn = document.getElementById(BUTTON_ID);
+      
+      if (!btn) {
+        await sleep(DELAYS.MEDIUM);
+        retries++;
+      } else {
+        debugLog('✓ Tìm thấy nút "+" với ID chính xác');
+        break;
+      }
+    }
+    
+    if (!btn) {
+      debugLog('❌ Không tìm thấy nút "+" với ID "' + BUTTON_ID + '" sau ' + maxRetries + ' lần thử');
+      throw 'Không tìm thấy nút "+" bên cạnh list video (ID: ' + BUTTON_ID + ')';
+    }
+    
+    // Scroll vào view để đảm bảo nút visible
+    btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+    await sleep(DELAYS.MEDIUM);
+    
+    // Hover để mở menu
+    debugLog('🖱️ Hover để mở menu...');
+    btn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    
+    // Thử click nếu hover không mở menu (một số trường hợp cần click)
+    await sleep(DELAYS.MEDIUM);
+    let menuItems = document.querySelectorAll('[role="menuitem"]');
+    if (menuItems.length === 0) {
+      debugLog('⚠️ Menu chưa mở sau hover, thử click...');
+      btn.click();
+      await sleep(DELAYS.LONG);
+      menuItems = document.querySelectorAll('[role="menuitem"]');
+    } else {
+      await sleep(DELAYS.LONG);
+      menuItems = document.querySelectorAll('[role="menuitem"]');
+    }
+    
+    // Tìm menu item "Extend..." hoặc "Kéo dài..."
+    debugLog('🔍 Tìm menu item Extend...');
+    debugLog(`Tìm thấy ${menuItems.length} menu items`);
+    
+    let extendMenuItem = null;
+    
+    // Tìm bằng text matching (đã hỗ trợ contains qua matchesText -> includes)
+    extendMenuItem = findButtonByText(Array.from(menuItems), 'EXTEND');
+    
+    if (!extendMenuItem) {
+      debugLog('❌ Không tìm thấy menu item Extend');
+      debugLog('Menu items có: ' + Array.from(menuItems).map(m => m.textContent).join(', '));
+      throw 'Không tìm thấy menu item Extend';
+    }
+    
+    debugLog('✓ Tìm thấy menu item: ' + extendMenuItem.textContent);
+    
+    // Click menu item
+    extendMenuItem.click();
+    debugLog('✓ Đã click Extend.');
+    
+    // Chờ UI cập nhật (prompt input sẵn sàng)
+    await sleep(DELAYS.LONG);
+    
+  } catch (e) {
+    debugLog('❌ extendScene: Lỗi ' + e);
+    throw e;
+  }
+}
 
 /**
  * STEP 3: Mở asset picker (có thể bỏ qua nếu tự hiện)

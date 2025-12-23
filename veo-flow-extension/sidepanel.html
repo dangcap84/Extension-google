@@ -24,28 +24,6 @@
       gap: 8px;
       flex-shrink: 0;
     }
-    .mode-toggle {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 12px;
-      flex-shrink: 0;
-    }
-    .mode-toggle button {
-      flex: 1;
-      padding: 8px;
-      font-size: 13px;
-    }
-    .mode-toggle button.active {
-      background: #2563eb;
-      color: #fff;
-    }
-    .mode-toggle button.inactive {
-      background: #1e293b;
-      color: #94a3b8;
-    }
-    .mode-toggle button.inactive:hover {
-      background: #334155;
-    }
     #title {
       font-weight: 700;
       font-size: 16px;
@@ -57,7 +35,18 @@
     .label {
       font-size: 12px;
       color: #94a3b8;
-      margin-bottom: -6px;
+      margin-bottom: 4px;
+      display: block;
+    }
+    select {
+      transition: border-color 0.2s;
+    }
+    select:hover {
+      border-color: #475569 !important;
+    }
+    select:focus {
+      outline: none;
+      border-color: #2563eb !important;
     }
     textarea {
       width: 100%;
@@ -304,9 +293,21 @@
   </div>
   
   <!-- Mode Toggle -->
-  <div class="mode-toggle">
-    <button id="normal-mode-btn" class="active">📝 Normal Flow</button>
-    <button id="queue-mode-btn" class="inactive">📋 Queue Mode</button>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+    <div>
+      <div class="label">Chế độ làm việc</div>
+      <select id="work-mode-select" style="width: 100%; padding: 8px; background: #0b1220; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; font-size: 12px; cursor: pointer; box-sizing: border-box;">
+        <option value="normal">📝 Normal Flow</option>
+        <option value="queue">📋 Queue Mode</option>
+      </select>
+    </div>
+    <div>
+      <div class="label">Mode scenes không có ảnh</div>
+      <select id="scene-mode-select" style="width: 100%; padding: 8px; background: #0b1220; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; font-size: 12px; cursor: pointer; transition: border-color 0.2s; box-sizing: border-box;">
+        <option value="extend">Extend (Mới)</option>
+        <option value="save_frame">Save Frame (Cũ)</option>
+      </select>
+    </div>
   </div>
   
   <!-- Normal Flow Section -->

@@ -27,10 +27,10 @@ const restartQueueBtn = document.getElementById('restart-queue-btn');
 const clearQueueBtn = document.getElementById('clear-queue-btn');
 const queueProgressEl = document.getElementById('queue-progress');
 const queueProgressTextEl = document.getElementById('queue-progress-text');
-const normalModeBtn = document.getElementById('normal-mode-btn');
-const queueModeBtn = document.getElementById('queue-mode-btn');
+const workModeSelect = document.getElementById('work-mode-select');
 const normalFlowSection = document.getElementById('normal-flow-section');
 const queueSection = document.getElementById('queue-section');
+const sceneModeSelect = document.getElementById('scene-mode-select');
 
 // Queue State
 let queueList = [];
@@ -72,9 +72,12 @@ function showScenebuilderMask(show) {
 }
 
 // Load saved prompts
-chrome.storage?.local?.get(['veoSidebarPrompts'], (data) => {
+chrome.storage?.local?.get(['veoSidebarPrompts', 'veoSceneMode'], (data) => {
   if (data && data.veoSidebarPrompts) {
     promptsBox.value = data.veoSidebarPrompts;
+  }
+  if (data && data.veoSceneMode) {
+    sceneModeSelect.value = data.veoSceneMode;
   }
 });
 
@@ -85,6 +88,11 @@ promptsBox.addEventListener('input', () => {
   saveTimeout = setTimeout(() => {
     chrome.storage?.local?.set({ veoSidebarPrompts: promptsBox.value });
   }, 1000);
+});
+
+// Save scene mode on change
+sceneModeSelect.addEventListener('change', () => {
+  chrome.storage?.local?.set({ veoSceneMode: sceneModeSelect.value });
 });
 
 // Validate image file
@@ -228,7 +236,8 @@ startBtn.addEventListener('click', async () => {
   // Prepare message
   const message = {
     type: 'START_FLOW',
-    prompts: list
+    prompts: list,
+    sceneMode: sceneModeSelect.value || 'extend' // 'extend' or 'save_frame'
   };
   
   // Add image if selected
@@ -1036,7 +1045,8 @@ restartQueueBtn.addEventListener('click', async () => {
           tab.id,
           {
             type: 'RESTART_QUEUE',
-            queueList: queueListForContent
+            queueList: queueListForContent,
+            sceneMode: sceneModeSelect.value || 'extend' // 'extend' or 'save_frame'
           },
           (response) => {
             if (chrome.runtime.lastError) {
@@ -1151,7 +1161,8 @@ startQueueBtn.addEventListener('click', async () => {
           tab.id,
           {
             type: 'START_QUEUE',
-            queueList: queueListForContent
+            queueList: queueListForContent,
+            sceneMode: sceneModeSelect.value || 'extend' // 'extend' or 'save_frame'
           },
           (response) => {
             if (chrome.runtime.lastError) {
@@ -1195,20 +1206,17 @@ function switchMode(mode, forceUpdate = false) {
     // Show normal flow, hide queue
     normalFlowSection.classList.remove('hidden');
     queueSection.classList.add('hidden');
-    normalModeBtn.classList.remove('inactive');
-    normalModeBtn.classList.add('active');
-    queueModeBtn.classList.remove('active');
-    queueModeBtn.classList.add('inactive');
   } else {
     // Show queue, hide normal flow
     normalFlowSection.classList.add('hidden');
     queueSection.classList.remove('hidden');
-    queueModeBtn.classList.remove('inactive');
-    queueModeBtn.classList.add('active');
-    normalModeBtn.classList.remove('active');
-    normalModeBtn.classList.add('inactive');
     // Load queue list when switching to queue mode
     loadQueueList();
+  }
+  
+  // Update combobox value
+  if (workModeSelect) {
+    workModeSelect.value = mode;
   }
   
   // Save preference
@@ -1217,17 +1225,18 @@ function switchMode(mode, forceUpdate = false) {
 
 // Initialize mode and event listeners when DOM is ready
 function initializeMode() {
-  // Ensure buttons exist
-  if (!normalModeBtn || !queueModeBtn || !normalFlowSection || !queueSection) {
+  // Ensure elements exist
+  if (!workModeSelect || !normalFlowSection || !queueSection) {
     // Retry after a short delay if elements not ready
     setTimeout(initializeMode, 100);
     return;
   }
   
-  // Mode toggle button events - attach only once
+  // Mode select combobox event - attach only once
   if (!modeListenersAttached) {
-    normalModeBtn.addEventListener('click', () => switchMode('normal'));
-    queueModeBtn.addEventListener('click', () => switchMode('queue'));
+    workModeSelect.addEventListener('change', (e) => {
+      switchMode(e.target.value);
+    });
     modeListenersAttached = true;
   }
   

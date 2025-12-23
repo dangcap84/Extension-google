@@ -306,6 +306,51 @@
     }
   };
   
+  // Hàm click vào video cuối cùng trong timeline
+  window.clickLastVideo = async function() {
+    try {
+      // Tìm button "+"
+      const addButton = document.getElementById('PINHOLE_ADD_CLIP_CARD_ID');
+      if (!addButton) {
+        throw new Error('Không tìm thấy nút "+" với ID PINHOLE_ADD_CLIP_CARD_ID');
+      }
+      
+      // Tìm parent container và list asset container
+      const parent = addButton.parentElement;
+      if (!parent) {
+        throw new Error('Không tìm thấy parent của nút "+"');
+      }
+      
+      // Lấy list asset container (phần tử đầu tiên trong parent)
+      const assetListContainer = addButton.previousElementSibling || parent.children[0];
+      if (!assetListContainer) {
+        throw new Error('Không tìm thấy list asset container');
+      }
+      
+      // Lấy các div items (visible) trong list asset container
+      const divItems = Array.from(assetListContainer.children)
+        .filter(child => child.tagName === 'DIV' && child.offsetParent !== null);
+      
+      if (divItems.length < 2) {
+        throw new Error(`Không đủ div items (cần ít nhất 2: 1 video + 1 slider), tìm thấy: ${divItems.length}`);
+      }
+      
+      // Click vào div item gần cuối (n-1, bỏ qua slider cuối cùng)
+      const targetDiv = divItems[divItems.length - 2];
+      targetDiv.scrollIntoView({ behavior: 'instant', block: 'center' });
+      await new Promise(res => setTimeout(res, 200));
+      targetDiv.click();
+      await new Promise(res => setTimeout(res, 200));
+      
+      return true;
+      
+    } catch (e) {
+      const errorMsg = e && e.message ? e.message : String(e);
+      console.error('[MAIN WORLD] clickLastVideo lỗi:', errorMsg);
+      throw e;
+    }
+  };
+  
   // Lắng nghe message từ content script
   window.addEventListener('message', async function(e) {
     // Validate origin để tránh XSS - chỉ chấp nhận message từ cùng origin
@@ -324,6 +369,19 @@
       console.log('[MAIN WORLD] Gửi kết quả - ok:', ok, 'error:', error);
       window.postMessage({ 
         type: 'SEEK_TO_END_VIDEO_RESULT', 
+        ok, 
+        error 
+      }, window.location.origin);
+    }
+    if (e.data && e.data.type === 'CLICK_LAST_VIDEO_REQUEST') {
+      let ok = false, error = null;
+      try {
+        ok = await window.clickLastVideo();
+      } catch (err) { 
+        error = err && err.message ? err.message : String(err);
+      }
+      window.postMessage({ 
+        type: 'CLICK_LAST_VIDEO_RESULT', 
         ok, 
         error 
       }, window.location.origin);
